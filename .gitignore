@@ -1,0 +1,45 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+backend/venv/
+frontend/venv/
+
+# Environment files
+.env
+.env.*
+
+# Generated media and runtime artifacts
+backend/data/audio/*.mp3
+backend/data/audio/
+backend/data/vector_store/
+backend/data/preprocessed_images/
+backend/data/local_db.db
+backend/data/*.db
+backend/*.zip
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.agents/
+.antigravity/
+.benchmarks/
+
+# Local scratch and placeholder files
+main.py
+test.py
+test1.py
+backend/main.py
+backend/README.md
+backend/data/medical_docs/
+backend/medical prescription 1.jpg
+backend/test_prescription_pre.png
+backend(zip).zip
