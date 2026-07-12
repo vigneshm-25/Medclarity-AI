@@ -1,12 +1,8 @@
 import os
 from pathlib import Path
 from typing import Optional
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import settings
-from langchain_huggingface import HuggingFaceEmbeddings
 
 # Sample trusted clinical guides to seed the RAG automatically so it works out of the box!
 DEFAULT_SAFETY_GUIDELINES = """
@@ -44,16 +40,9 @@ DEFAULT_SAFETY_GUIDELINES = """
 class RAGAgent:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.GEMINI_API_KEY
-
-        # Initialize Local HuggingFace Embeddings
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
         self.vector_store_path = settings.VECTOR_STORE_DIR
         self.vector_store = None
-        
-        # Load or initialize the vector database
-        self.initialize_vector_store()
+        self.embeddings = None
 
     def seed_default_documents(self):
         """
@@ -64,6 +53,17 @@ class RAGAgent:
 
     def initialize_vector_store(self):
         """Loads existing FAISS index or builds a new one from official PDFs."""
+        if self.vector_store is not None:
+            return
+
+        from langchain_community.vectorstores import FAISS
+        from langchain_huggingface import HuggingFaceEmbeddings
+
+        if self.embeddings is None:
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2"
+            )
+
         index_file = self.vector_store_path / "index.faiss"
         if index_file.exists():
             try:
@@ -107,6 +107,8 @@ class RAGAgent:
           - "sources": List of sources with page numbers and content snippet.
           - "low_confidence": Boolean indicating if query relevance is low.
         """
+        self.initialize_vector_store()
+        
         if not query or not query.strip():
             return {
                 "context": "No query terms provided.",

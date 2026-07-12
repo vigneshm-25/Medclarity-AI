@@ -55,7 +55,6 @@ def startup_event():
     global coordinator
 
     init_db()
-    get_or_create_coordinator()
 
 @app.get("/")
 def read_root():
