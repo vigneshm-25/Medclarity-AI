@@ -1557,7 +1557,7 @@ elif st.session_state.step == 2:
                             chat_response = None
                             for attempt in range(2):
                                 try:
-                                    model = genai.GenerativeModel("gemini-2.5-flash", system_instruction=system_prompt)
+                                    model = genai.GenerativeModel("gemini-3.1-flash-lite", system_instruction=system_prompt)
                                     response = model.generate_content(user_prompt)
                                     chat_response = response.text
                                     break

@@ -59,13 +59,15 @@ class SimplificationAgent:
             )
 
         for attempt in range(2):
+            start_time = time.time()
             try:
                 model = genai.GenerativeModel(
-                    "gemini-2.5-flash",
+                    "gemini-3.1-flash-lite",
                     system_instruction=system_instructions,
                     generation_config={"response_mime_type": "application/json", "temperature": 0.3}
                 )
                 response = model.generate_content(f"Simplify this extracted prescription details and safety alerts:\n\n{extracted_details}\n\nSafety Report:\n{safety_details}")
+                elapsed_time = time.time() - start_time
                 content = response.text
                 
                 if content.startswith("```json"):
@@ -75,26 +77,29 @@ class SimplificationAgent:
                     
                 return SimplifiedPrescription.model_validate_json(content)
             except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "quota" in err_str.lower():
+                elapsed_time = time.time() - start_time
+                err_str = str(e).lower()
+                err_type = type(e).__name__
+                
+                http_status = "N/A"
+                if "429" in err_str: http_status = "429"
+                elif "503" in err_str: http_status = "503"
+                elif "403" in err_str: http_status = "403"
+                elif "400" in err_str: http_status = "400"
+
+                import logging
+                logging.warning(
+                    f"Gemini Simplification Agent attempt {attempt + 1}/2 failed. "
+                    f"Timestamp: {time.time()}, Agent: Simple, SDK: google.generativeai, Model: gemini-3.1-flash-lite, "
+                    f"API Key Source: Env, Retry Count: {attempt + 1}, Exception Type: {err_type}, "
+                    f"HTTP Status: {http_status}, Response Time: {elapsed_time:.2f}s, Error: {e}"
+                )
+
+                if "429" in err_str or "quota" in err_str:
                     if attempt == 0:
                         print("Gemini rate limit hit. Retrying in 10 seconds...")
                         time.sleep(10)
                     else:
-                        import traceback
-                        print("=" * 80)
-                        print("=== GEMINI SIMPLIFICATION AGENT ERROR ===")
-                        print(f"Exception Type: {type(e).__name__}")
-                        print(f"Exception Message: {str(e)}")
-                        traceback.print_exc()
-                        print("=" * 80)
-                        raise RuntimeError(f"Simplification agent processing failed: {str(e)}") from e
+                        raise RuntimeError(f"Simplification agent processing failed: {err_type}") from e
                 else:
-                    import traceback
-                    print("=" * 80)
-                    print("=== GEMINI SIMPLIFICATION AGENT ERROR ===")
-                    print(f"Exception Type: {type(e).__name__}")
-                    print(f"Exception Message: {str(e)}")
-                    traceback.print_exc()
-                    print("=" * 80)
-                    raise RuntimeError(f"Simplification agent processing failed: {str(e)}") from e
+                    raise RuntimeError(f"Simplification agent processing failed: {err_type}") from e

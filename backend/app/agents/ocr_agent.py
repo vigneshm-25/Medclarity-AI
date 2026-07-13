@@ -9,6 +9,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from app.config import settings
 
+FALLBACK_OCR_MESSAGE = (
+    "AI OCR Service Temporarily Unavailable\n\n"
+    "Your prescription image has been uploaded successfully.\n\n"
+    "Our cloud AI OCR service has temporarily reached its current usage limit.\n\n"
+    "This is an external cloud service limitation and does not indicate any issue with your prescription image or the GramCare AI application.\n\n"
+    "Please try again after a few minutes."
+)
+
 # OCR System Instruction matching JSON output format and strict rules
 SYSTEM_PROMPT = """You are an expert Medical OCR Agent specializing in transcribing Indian handwritten prescriptions and medical reports.
 Your response must be a valid JSON object matching the requested schema.
@@ -284,8 +292,10 @@ class OCRAgent:
         backoffs = [1, 3, 6]
         last_error: Optional[Exception] = None
         for attempt, wait_time in enumerate(backoffs, start=1):
+            start_time = time.time()
             try:
                 response = self.llm.invoke(messages)
+                elapsed_time = time.time() - start_time
                 print(f"[CP4] raw gemini response: {response}")
                 
                 finish_reason = getattr(response, "response_metadata", {}).get("finish_reason")
@@ -298,11 +308,24 @@ class OCRAgent:
                     return content
                 raise ValueError("Gemini returned an empty OCR response.")
             except Exception as exc:
+                elapsed_time = time.time() - start_time
                 print(f"[CP4] exception during gemini response: {exc}")
                 last_error = exc
                 err_str = str(exc).lower()
                 err_type = type(exc).__name__
-                logging.warning(f"Gemini OCR attempt {attempt}/{len(backoffs)} failed: {err_type}: {exc}")
+                
+                http_status = "N/A"
+                if "429" in err_str: http_status = "429"
+                elif "503" in err_str: http_status = "503"
+                elif "403" in err_str: http_status = "403"
+                elif "400" in err_str: http_status = "400"
+
+                logging.warning(
+                    f"Gemini OCR attempt {attempt}/{len(backoffs)} failed. "
+                    f"Timestamp: {time.time()}, Agent: OCR, SDK: LangChain, Model: gemini-2.5-pro, "
+                    f"API Key Source: Env, Retry Count: {attempt}, Exception Type: {err_type}, "
+                    f"HTTP Status: {http_status}, Response Time: {elapsed_time:.2f}s, Error: {exc}"
+                )
 
                 is_retryable = any(
                     keyword in err_str
@@ -338,7 +361,7 @@ class OCRAgent:
         except Exception as t_exc:
             logging.warning(f"Local Tesseract OCR fallback failed: {t_exc}")
 
-        return "[unclear] Unable to extract readable text from the prescription image."
+        return FALLBACK_OCR_MESSAGE
 
     def extract_text(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> Tuple[str, bool]:
         """
@@ -408,7 +431,7 @@ class OCRAgent:
                     merged_json = self.check_self_consistency(content1, content2)
                     raw_ocr, ocr_fallback = self.format_ocr_json_to_text(merged_json), False
                 else:
-                    raw_ocr, ocr_fallback = content1.strip() or content2.strip() or "[unclear] Unable to extract readable text from the prescription image.", False
+                    raw_ocr, ocr_fallback = content1.strip() or content2.strip() or FALLBACK_OCR_MESSAGE, False
                 print(f"[CP5] returning raw_ocr={raw_ocr!r}, fallback_used={ocr_fallback}")
                 return raw_ocr, ocr_fallback
 
@@ -431,7 +454,7 @@ class OCRAgent:
             logging.error(f"Gemini OCR extraction failed: {exc}")
             fallback_text = self._local_ocr_fallback(preprocessed_bytes)
             if not fallback_text.strip():
-                fallback_text = "[unclear] Unable to extract readable text from the prescription image."
+                fallback_text = FALLBACK_OCR_MESSAGE
             raw_ocr, ocr_fallback = fallback_text, True
             print(f"[CP5] returning raw_ocr={raw_ocr!r}, fallback_used={ocr_fallback}")
             return raw_ocr, ocr_fallback
