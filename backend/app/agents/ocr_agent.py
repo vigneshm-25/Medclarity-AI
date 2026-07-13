@@ -59,7 +59,7 @@ class OCRAgent:
         if self.api_key:
             try:
                 self.llm = ChatGoogleGenerativeAI(
-                    model="gemini-3.1-pro",
+                    model="gemini-2.5-pro",
                     google_api_key=self.api_key,
                     temperature=0.1,
                     max_tokens=8192,
