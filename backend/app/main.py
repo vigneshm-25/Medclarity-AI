@@ -241,6 +241,8 @@ async def process_text(payload: Dict[str, Any], db: Session = Depends(get_db)):
             )
             db.add(db_reminder)
         db.commit()
+        
+        print(f"[DEBUG-ISSUE-1] API Response returning reminders: {master_payload.get('reminders', [])}")
         return master_payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

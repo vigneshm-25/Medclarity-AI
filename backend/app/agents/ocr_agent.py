@@ -2,12 +2,12 @@ import base64
 import logging
 import os
 import json
-import difflib
 import time
+import re
 from typing import Optional, Tuple
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from app.config import settings
+from app.llm.openai_client import get_openai_client
+import openai
 
 FALLBACK_OCR_MESSAGE = (
     "AI OCR Service Temporarily Unavailable\n\n"
@@ -17,41 +17,56 @@ FALLBACK_OCR_MESSAGE = (
     "Please try again after a few minutes."
 )
 
-# OCR System Instruction matching JSON output format and strict rules
-SYSTEM_PROMPT = """You are an expert Medical OCR Agent specializing in transcribing Indian handwritten prescriptions and medical reports.
+COMBINED_PROMPT = """You are an expert Medical OCR and Structuring Agent specializing in Indian handwritten prescriptions and medical reports.
 Your response must be a valid JSON object matching the requested schema.
 
-HANDWRITTEN STYLE GUIDE FOR INDIAN PRESCRIPTIONS:
-- Prescriptions often begin with 'Rx' (meaning recipe/treatment).
-- Medicines are usually listed in a numbered list (e.g., 1. Dolo 650mg ...).
-- Dosage timings may be written as numbers separated by dashes (e.g., '1-0-1' means 1 pill in the morning, 0 in the afternoon, 1 at night; '0-0-1' means 1 pill at night).
-- Relation to food is often abbreviated: 'AC' or 'A/C' (Before Food / Empty Stomach), 'PC' or 'P/C' (After Food).
-- Dosages may have circles around them (e.g., a circled '1' or '2' indicating tablet count).
+INSTRUCTIONS:
+Part 1: OCR Vision Transcription
+1. Look at the provided medical prescription image and transcribe every visible word, number, and symbol EXACTLY as written.
+2. Inspect the image line by line. Carefully read handwritten text, paying special attention to cursive or sloppy handwriting.
+3. Mentally zoom into difficult or blurry regions to decipher the letters.
+4. Preserve uncertain text exactly as it appears.
+5. NEVER hallucinate or invent medicine names in the raw transcription.
+6. Output [unclear] ONLY when the text is absolutely unreadable.
+7. Preserve line breaks where appropriate. Store this literal transcription in the "raw_transcription" field.
 
-TRANSCRIPTION CONSTRAINTS:
-1. ONLY transcribe text that is clearly visible and legible in the image. Do NOT guess, infer, extrapolate, or invent any medicine names, dosages, or details.
-2. For any word, field, or line that is blurry, smudged, or not clearly legible, output exactly '[unclear]' for that specific value. Never speculate or list alternative guesses.
-3. IGNORE all pre-printed form boilerplate (such as checkbox list of lab tests, hospital terms, etc.) UNLESS there is a handwritten circle, checkmark, tick, or custom text written next to it.
-4. Keep the output proportional to the actual content written on the prescription. Do not generate hypothetical information or generic medical suggestions. Stop once all visible handwritten content has been transcribed.
+Part 2: Medical Structuring
+1. Based on your raw transcription, extract the patient name, age, sex, date, doctor name, and chief complaint if present.
+2. Extract all medicines. For medicines:
+   - If a medicine name is partially legible but highly probable, return the most likely medicine name instead of [unclear].
+   - Assign a confidence score to each medicine: "high", "medium", or "low".
+   - DO NOT hallucinate or invent information that has no visual evidence in the image.
+   - Low confidence items MUST remain in the output (do not drop them).
+3. Understand common handwritten abbreviations:
+   - OD (once a day), BD/BID (twice a day), TDS/TID (three times a day), QID (four times a day), SOS (as needed), HS (at night), Stat (immediately).
+   - Relation to food: AC (before food), PC (after food).
+   - Dosage patterns like 1-0-1 (morning and night), 0-1-0 (afternoon only), 1-1-1 (morning, afternoon, night), 0-0-1 (night only).
+4. Preserve the original meaning. Assign a confidence score to all major fields.
+5. Place this structured data in the "structured_json" field.
 
 JSON SCHEMA:
-Return a JSON object with the following fields:
+Return a JSON object exactly matching this structure:
 {
-  "patient_name": "String or null if not found",
-  "age": "String or null if not found",
-  "sex": "String or null if not found",
-  "date": "String or null if not found",
-  "doctor_name": "String or null if not found",
-  "chief_complaint": "String or null if not found",
-  "medicines": [
-    {
-      "name": "Transcribed name of medicine (e.g., Dolo 650 or [unclear])",
-      "dosage": "Transcribed dosage details (e.g., 650mg, 1 tab, or [unclear])",
-      "frequency": "Transcribed frequency/timing (e.g., BID, 1-0-1, or [unclear])",
-      "confidence": "Legibility confidence of this medicine entry: 'high', 'medium', or 'low'"
-    }
-  ],
-  "other_notes": "Any other handwritten instructions or notes"
+  "raw_transcription": "Your complete literal line-by-line transcription",
+  "structured_json": {
+    "patient_name": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "age": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "sex": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "date": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "doctor_name": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "chief_complaint": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "diagnosis": {"value": "String or null if not found", "confidence": "high, medium, or low"},
+    "medicines": [
+      {
+        "name": "Extracted or inferred name of medicine",
+        "dosage": "Extracted dosage details",
+        "frequency": "Extracted frequency/timing",
+        "duration": "Extracted duration",
+        "confidence": "high, medium, or low"
+      }
+    ],
+    "other_notes": "Any other instructions or notes"
+  }
 }
 """
 
@@ -61,110 +76,180 @@ def encode_image_to_base64(image_bytes: bytes) -> str:
 
 class OCRAgent:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
-        self.llm = None
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.client = None
 
         if self.api_key:
             try:
-                self.llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.5-pro",
-                    google_api_key=self.api_key,
-                    temperature=0.1,
-                    max_tokens=8192,
-                    thinking_budget=512,
-                    request_timeout=30.0,
-                )
+                self.client = get_openai_client(self.api_key)
             except Exception as exc:
-                logging.warning(f"Gemini OCR client initialization failed: {exc}")
-                self.llm = None
+                logging.warning(f"OpenAI OCR client initialization failed: {exc}")
+                self.client = None
 
     def preprocess_image(self, image_bytes: bytes) -> bytes:
         """
         Preprocesses the input image bytes to enhance OCR legibility:
-        1. Deskew (correct rotation).
-        2. Convert to grayscale and enhance contrast (CLAHE).
-        3. Upscale if low resolution (< 1200px on any side).
-        4. Save preprocessed image separately for comparison.
+        1. Limits resolution to avoid timeouts.
+        2. Deskew (correct rotation).
+        3. Automatic border removal.
+        4. Configurable Noise removal (fast median blur).
+        5. Mild sharpening.
+        6. Adaptive thresholding / Contrast Enhancement (only if beneficial).
         """
         import cv2
         import numpy as np
+        import time
+        
+        start_time = time.time()
+        operations_used = []
         
         try:
-            # Decode image bytes
             nparr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is None:
                 return image_bytes
-                
-            # 1. Deskew
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # Find white-on-black text representation for minAreaRect
-            thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-            coords = np.column_stack(np.where(thresh > 0))
-            if coords.shape[0] > 0:
-                rect = cv2.minAreaRect(coords)
-                angle = rect[-1]
-                # minAreaRect returns angle in range [-90, 0)
-                if angle < -45:
-                    angle = -(90 + angle)
-                else:
-                    angle = -angle
-                
-                # Apply rotation if it is within a reasonable correction window (0.5 to 20 degrees)
-                if 0.5 < abs(angle) < 20:
-                    (h, w) = img.shape[:2]
-                    center = (w // 2, h // 2)
-                    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-                    img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
-            # 2. Contrast Enhancement (CLAHE)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(gray)
+            orig_h, orig_w = img.shape[:2]
+            logging.info(f"Original Image Resolution: {orig_w}x{orig_h}")
             
-            # 3. Upscale if resolution is low
-            h, w = enhanced.shape[:2]
-            if w < 1200 or h < 1200:
+            # Limit maximum dimension to 2048 to prevent oversized images causing timeouts
+            max_dim = 2048
+            if orig_w > max_dim or orig_h > max_dim:
+                scale = max_dim / max(orig_w, orig_h)
+                img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                operations_used.append("downscale")
+            elif orig_w < 1000 or orig_h < 1000:
                 scale = 2.0
-                enhanced = cv2.resize(enhanced, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+                if max(new_w, new_h) > max_dim:
+                    scale = max_dim / max(orig_w, orig_h)
+                img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                operations_used.append("upscale")
+            
+            # 1. Deskew
+            try:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+                coords = np.column_stack(np.where(thresh > 0))
+                if coords.shape[0] > 0:
+                    rect = cv2.minAreaRect(coords)
+                    angle = rect[-1]
+                    if angle < -45:
+                        angle = -(90 + angle)
+                    else:
+                        angle = -angle
+                    if 0.5 < abs(angle) < 20:
+                        (h, w) = img.shape[:2]
+                        center = (w // 2, h // 2)
+                        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                        img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                        operations_used.append("deskew")
+            except Exception as e:
+                logging.warning(f"Deskew failed: {e}")
+
+            # 2. Border Removal
+            try:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+                coords = cv2.findNonZero(thresh)
+                if coords is not None:
+                    x, y, w, h = cv2.boundingRect(coords)
+                    padding = 10
+                    x = max(0, x - padding)
+                    y = max(0, y - padding)
+                    w = min(img.shape[1] - x, w + 2*padding)
+                    h = min(img.shape[0] - y, h + 2*padding)
+                    img = img[y:y+h, x:x+w]
+                    operations_used.append("border_removal")
+            except Exception as e:
+                logging.warning(f"Border removal failed: {e}")
+
+            # 3. Configurable Noise Removal
+            try:
+                # Fast and effective noise removal preserving edges
+                img = cv2.medianBlur(img, 3)
+                operations_used.append("median_blur")
+            except Exception as e:
+                logging.warning(f"Noise removal failed: {e}")
+
+            # 4. Mild Sharpening
+            try:
+                kernel = np.array([[-0.5,-0.5,-0.5], 
+                                   [-0.5, 5.0,-0.5], 
+                                   [-0.5,-0.5,-0.5]])
+                img = cv2.filter2D(img, -1, kernel)
+                operations_used.append("sharpening")
+            except Exception as e:
+                logging.warning(f"Sharpening failed: {e}")
+
+            # 5. Adaptive Thresholding (only if beneficial/low contrast)
+            try:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                mean, stddev = cv2.meanStdDev(gray)
+                if stddev[0][0] < 55: # Low contrast image detection
+                    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+                    l, a, b = cv2.split(lab)
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    cl = clahe.apply(l)
+                    limg = cv2.merge((cl, a, b))
+                    img = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+                    operations_used.append("adaptive_contrast")
+            except Exception as e:
+                logging.warning(f"Contrast enhancement failed: {e}")
                 
-            # 4. Save preprocessed image to a separate file
             save_dir = settings.DATA_DIR / "preprocessed_images"
             save_dir.mkdir(parents=True, exist_ok=True)
             save_path = save_dir / "last_preprocessed.png"
-            cv2.imwrite(str(save_path), enhanced)
+            cv2.imwrite(str(save_path), img)
             
-            # Encode back to PNG bytes
-            success, encoded_img = cv2.imencode('.png', enhanced)
+            success, encoded_img = cv2.imencode('.png', img)
+            
+            prep_duration = time.time() - start_time
+            logging.info(f"Image Preprocessing complete in {prep_duration:.2f}s. Operations: {', '.join(operations_used)}")
+            
             if success:
                 return encoded_img.tobytes()
                 
         except Exception as e:
-            import logging
-            logging.error(f"Image preprocessing failed: {e}")
+            prep_duration = time.time() - start_time
+            logging.error(f"Image preprocessing failed overall in {prep_duration:.2f}s: {e}")
             
         return image_bytes
 
     def format_ocr_json_to_text(self, ocr_json: dict) -> str:
-        """Formats the structured OCR JSON object into a unified Markdown/text string."""
+        """Formats the structured OCR JSON object into a unified Markdown/text string. (Maintained for backward compat if needed)"""
         lines = []
-        if ocr_json.get("doctor_name"):
-            lines.append(f"Doctor Name: {ocr_json['doctor_name']}")
-        if ocr_json.get("patient_name"):
-            lines.append(f"Patient Name: {ocr_json['patient_name']}")
+        
+        def extract_val(field):
+            val = ocr_json.get(field)
+            if isinstance(val, dict):
+                return val.get("value")
+            return val
+
+        doctor_name = extract_val("doctor_name")
+        if doctor_name:
+            lines.append(f"Doctor Name: {doctor_name}")
+            
+        patient_name = extract_val("patient_name")
+        if patient_name:
+            lines.append(f"Patient Name: {patient_name}")
         
         meta = []
-        if ocr_json.get("age"):
-            meta.append(f"Age: {ocr_json['age']}")
-        if ocr_json.get("sex"):
-            meta.append(f"Sex: {ocr_json['sex']}")
-        if ocr_json.get("date"):
-            meta.append(f"Date: {ocr_json['date']}")
+        age = extract_val("age")
+        if age:
+            meta.append(f"Age: {age}")
+        sex = extract_val("sex")
+        if sex:
+            meta.append(f"Sex: {sex}")
+        date = extract_val("date")
+        if date:
+            meta.append(f"Date: {date}")
         if meta:
             lines.append(" | ".join(meta))
             
-        if ocr_json.get("chief_complaint"):
-            lines.append(f"Chief Complaint: {ocr_json['chief_complaint']}")
+        chief_complaint = extract_val("chief_complaint")
+        if chief_complaint:
+            lines.append(f"Chief Complaint: {chief_complaint}")
             
         if ocr_json.get("medicines"):
             lines.append("\nMedicines:")
@@ -175,8 +260,9 @@ class OCRAgent:
                 conf = med.get("confidence") or "medium"
                 lines.append(f"{idx}. {name} - {dosage} - {freq} (Confidence: {conf})")
                 
-        if ocr_json.get("other_notes"):
-            lines.append(f"\nOther Notes:\n{ocr_json['other_notes']}")
+        other_notes = extract_val("other_notes")
+        if other_notes:
+            lines.append(f"\nOther Notes:\n{other_notes}")
             
         return "\n".join(lines)
 
@@ -189,6 +275,8 @@ class OCRAgent:
                     clean = clean.replace("```json", "", 1)
                 if clean.endswith("```"):
                     clean = clean[:-3]
+                clean = re.sub(r',\s*}', '}', clean)
+                clean = re.sub(r',\s*]', ']', clean)
                 return json.loads(clean.strip())
             except Exception:
                 return {}
@@ -203,45 +291,32 @@ class OCRAgent:
             
         merged = {}
         # 1. Standard text fields comparison
-        text_fields = ["patient_name", "age", "sex", "date", "doctor_name", "chief_complaint", "other_notes"]
+        text_fields = ["patient_name", "age", "sex", "date", "doctor_name", "chief_complaint", "diagnosis", "other_notes"]
         for field in text_fields:
-            val1 = json1.get(field) or ""
-            val2 = json2.get(field) or ""
-            if val1 == val2:
-                merged[field] = val1
+            val1_obj = json1.get(field) or {}
+            val2_obj = json2.get(field) or {}
+            
+            val1 = val1_obj.get("value") if isinstance(val1_obj, dict) else val1_obj
+            val2 = val2_obj.get("value") if isinstance(val2_obj, dict) else val2_obj
+            
+            val1_str = str(val1) if val1 else ""
+            val2_str = str(val2) if val2 else ""
+            
+            if val1_str.lower() == val2_str.lower():
+                merged[field] = {"value": val1_str, "confidence": val1_obj.get("confidence", "medium") if isinstance(val1_obj, dict) else "medium"}
             else:
-                # Text similarity matching ratio
-                ratio = difflib.SequenceMatcher(None, str(val1).lower(), str(val2).lower()).ratio()
-                if ratio >= 0.8:
-                    merged[field] = val1
-                else:
-                    merged[field] = f"{val1} / {val2} (mismatch)"
+                merged[field] = {"value": f"{val1_str} / {val2_str} (mismatch)", "confidence": "low"}
                     
-        # 2. Medicines list comparison
+        # 2. Medicines list comparison (Exact match only to avoid OCR agent fuzzy logic)
         meds1 = json1.get("medicines") or []
         meds2 = json2.get("medicines") or []
         
         merged_meds = []
-        matched_indices_2 = set()
         for m1 in meds1:
-            name1 = m1.get("name") or ""
-            best_match = None
-            best_idx = -1
-            best_ratio = 0.0
+            name1 = (m1.get("name") or "").lower()
+            best_match = next((m for m in meds2 if (m.get("name") or "").lower() == name1), None)
             
-            for idx2, m2 in enumerate(meds2):
-                if idx2 in matched_indices_2:
-                    continue
-                name2 = m2.get("name") or ""
-                ratio = difflib.SequenceMatcher(None, name1.lower(), name2.lower()).ratio()
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_match = m2
-                    best_idx = idx2
-                    
-            if best_match and best_ratio >= 0.75:
-                # Matched drug entries. Check dosage and frequency
-                matched_indices_2.add(best_idx)
+            if best_match:
                 dosage1 = m1.get("dosage") or ""
                 dosage2 = best_match.get("dosage") or ""
                 freq1 = m1.get("frequency") or ""
@@ -249,7 +324,6 @@ class OCRAgent:
                 
                 confidence = m1.get("confidence") or "medium"
                 if dosage1.lower() != dosage2.lower() or freq1.lower() != freq2.lower():
-                    # Values differ significantly - flag as low confidence and display both
                     confidence = "low"
                     dosage = f"{dosage1} / {dosage2}" if dosage1 != dosage2 else dosage1
                     freq = f"{freq1} / {freq2}" if freq1 != freq2 else freq1
@@ -258,90 +332,96 @@ class OCRAgent:
                     freq = freq1
                     
                 merged_meds.append({
-                    "name": name1,
+                    "name": m1.get("name"),
                     "dosage": dosage,
                     "frequency": freq,
+                    "duration": m1.get("duration"),
                     "confidence": confidence
                 })
             else:
-                # No matching entry in double call - downgrade confidence
                 merged_meds.append({
-                    "name": name1,
+                    "name": m1.get("name"),
                     "dosage": m1.get("dosage"),
                     "frequency": m1.get("frequency"),
+                    "duration": m1.get("duration"),
                     "confidence": "low"
                 })
                 
-        # Append remaining medicines from second list
-        for idx2, m2 in enumerate(meds2):
-            if idx2 not in matched_indices_2:
+        # Append remaining medicines from second list that had no exact match
+        for m2 in meds2:
+            name2 = (m2.get("name") or "").lower()
+            if not any((m.get("name") or "").lower() == name2 for m in merged_meds):
                 merged_meds.append({
                     "name": m2.get("name"),
                     "dosage": m2.get("dosage"),
                     "frequency": m2.get("frequency"),
+                    "duration": m2.get("duration"),
                     "confidence": "low"
                 })
                 
         merged["medicines"] = merged_meds
         return merged
 
-    def _run_gemini_ocr(self, messages) -> str:
-        if not self.llm:
-            raise RuntimeError("Gemini OCR is not configured.")
+    def _run_openai_completion(self, messages, is_json=False) -> str:
+        if not self.client:
+            raise RuntimeError("OpenAI OCR is not configured.")
 
         backoffs = [1, 3, 6]
         last_error: Optional[Exception] = None
         for attempt, wait_time in enumerate(backoffs, start=1):
             start_time = time.time()
             try:
-                response = self.llm.invoke(messages)
-                elapsed_time = time.time() - start_time
-                print(f"[CP4] raw gemini response: {response}")
+                kwargs = {
+                    "model": "gpt-5",
+                    "messages": messages,
+                    "max_completion_tokens": 8192, # Changed from 1500 to 8192
+                    "timeout": 90.0, # Increased significantly for base64 high-res image stability
+                    "reasoning_effort": "low"
+                }
+                # Use JSON schema response_format if requested
+                if is_json:
+                    kwargs["response_format"] = {"type": "json_object"}
                 
-                finish_reason = getattr(response, "response_metadata", {}).get("finish_reason")
-                print(f"Gemini finish_reason: {finish_reason}")
-                if str(finish_reason).upper() == "MAX_TOKENS":
-                    logging.warning("[WARNING] Gemini response was truncated — max_tokens may still be insufficient for this image")
+                print(f"[CP-OCR-CONFIG] model={kwargs['model']}, max_completion_tokens={kwargs['max_completion_tokens']}")
+                
+                response = self.client.chat.completions.create(**kwargs)
+                print(f"[CP-OCR-USAGE] usage={response.usage}")
+                print(f"[CP-OCR-COST-CHECK] reasoning_tokens={response.usage.completion_tokens_details.reasoning_tokens}, total_output={response.usage.completion_tokens}")
+                
+                elapsed_time = time.time() - start_time
+                logging.info(f"OpenAI Response Time (Attempt {attempt}): {elapsed_time:.2f}s")
+                
+                finish_reason = response.choices[0].finish_reason
+                if str(finish_reason).upper() == "LENGTH":
+                    logging.warning("[WARNING] OpenAI response was truncated due to max_completion_tokens limit.")
 
-                content = getattr(response, "content", None)
+                content = response.choices[0].message.content
                 if isinstance(content, str) and content.strip():
                     return content
-                raise ValueError("Gemini returned an empty OCR response.")
+                raise ValueError("OpenAI returned an empty response.")
             except Exception as exc:
                 elapsed_time = time.time() - start_time
-                print(f"[CP4] exception during gemini response: {exc}")
                 last_error = exc
-                err_str = str(exc).lower()
                 err_type = type(exc).__name__
-                
-                http_status = "N/A"
-                if "429" in err_str: http_status = "429"
-                elif "503" in err_str: http_status = "503"
-                elif "403" in err_str: http_status = "403"
-                elif "400" in err_str: http_status = "400"
+                http_status = getattr(exc, "status_code", "N/A")
 
                 logging.warning(
-                    f"Gemini OCR attempt {attempt}/{len(backoffs)} failed. "
-                    f"Timestamp: {time.time()}, Agent: OCR, SDK: LangChain, Model: gemini-2.5-pro, "
-                    f"API Key Source: Env, Retry Count: {attempt}, Exception Type: {err_type}, "
-                    f"HTTP Status: {http_status}, Response Time: {elapsed_time:.2f}s, Error: {exc}"
+                    f"OpenAI attempt {attempt}/{len(backoffs)} failed. "
+                    f"Exception Type: {err_type}, HTTP Status: {http_status}, Time: {elapsed_time:.2f}s, Error: {exc}"
                 )
 
-                is_retryable = any(
-                    keyword in err_str
-                    for keyword in (
-                        "503", "unavailable", "429", "resource_exhausted", "resourceexhausted",
-                        "quota", "timeout", "temporarily", "rate limit", "permission_denied", "forbidden"
-                    )
-                )
+                is_retryable = isinstance(exc, (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError))
                 if attempt < len(backoffs) and is_retryable:
+                    logging.info(f"Retryable error identified: {err_type}. Retrying in {wait_time}s...")
                     time.sleep(wait_time)
                     continue
+                else:
+                    logging.error(f"Non-retryable error or exhausted retries: {err_type}.")
                 break
 
         if last_error is not None:
             raise last_error
-        raise RuntimeError("Gemini OCR failed with no error context.")
+        raise RuntimeError("OpenAI call failed with no error context.")
 
     def _local_ocr_fallback(self, preprocessed_bytes: bytes) -> str:
         try:
@@ -357,6 +437,7 @@ class OCRAgent:
             extracted_text = pytesseract.image_to_string(image, lang="eng+tam")
             cleaned = "\n".join(part.strip() for part in extracted_text.splitlines() if part.strip())
             if cleaned:
+                logging.info("Tesseract fallback successfully extracted text.")
                 return cleaned
         except Exception as t_exc:
             logging.warning(f"Local Tesseract OCR fallback failed: {t_exc}")
@@ -365,16 +446,17 @@ class OCRAgent:
 
     def extract_text(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> Tuple[str, bool]:
         """
-        Uses Gemini Multimodal LLM to read prescription images and perform highly robust OCR.
-        Falls back to Tesseract and then to a neutral placeholder if needed.
+        Two-stage OCR pipeline:
+        Stage 1: Literal transcription via Vision.
+        Stage 2: Medical structuring to JSON.
+        Returns a JSON string containing both 'raw_transcription' and 'structured_json'.
         """
         import time
         import logging
-        import traceback
         import re
 
-        print(f"[CP3] payload type: {type(image_bytes)}, len: {len(image_bytes)}")
-        print(f"[CP3] first 16 bytes: {image_bytes[:16]}")
+        total_start_time = time.time()
+        
         preprocessed_bytes = self.preprocess_image(image_bytes)
         b64_image = encode_image_to_base64(preprocessed_bytes)
 
@@ -383,6 +465,10 @@ class OCRAgent:
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
             cleaned = re.sub(r"\s*```$", "", cleaned)
             cleaned = cleaned.strip()
+            
+            # Sanitize trailing commas
+            cleaned = re.sub(r',\s*}', '}', cleaned)
+            cleaned = re.sub(r',\s*]', ']', cleaned)
 
             try:
                 try:
@@ -403,58 +489,90 @@ class OCRAgent:
                 return None, False
 
         try:
-            system_msg = SystemMessage(content=SYSTEM_PROMPT)
-            human_msg = HumanMessage(
-                content=[
-                    {
-                        "type": "text",
-                        "text": "Please extract the text and all medical details from this prescription report image."
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64_image}"
+            # Combined OCR and Structuring
+            messages = [
+                {
+                    "role": "system",
+                    "content": COMBINED_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Please transcribe and structure the information in this medical prescription image."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}"
+                            }
                         }
-                    }
-                ]
-            )
-
+                    ]
+                }
+            ]
+            
             self_consistency = os.getenv("SELF_CONSISTENCY_CHECK", "false").lower() == "true"
-
+            
             if self_consistency:
-                content1 = self._run_gemini_ocr([system_msg, human_msg])
-                content2 = self._run_gemini_ocr([system_msg, human_msg])
-                ocr_json1, success1 = parse_json_robust(content1)
-                ocr_json2, success2 = parse_json_robust(content2)
+                content1 = self._run_openai_completion(messages, is_json=True)
+                content2 = self._run_openai_completion(messages, is_json=True)
+                parsed_json1, success1 = parse_json_robust(content1)
+                parsed_json2, success2 = parse_json_robust(content2)
 
                 if success1 or success2:
-                    merged_json = self.check_self_consistency(content1, content2)
-                    raw_ocr, ocr_fallback = self.format_ocr_json_to_text(merged_json), False
+                    struct1 = json.dumps(parsed_json1.get("structured_json", {})) if success1 and parsed_json1 else "{}"
+                    struct2 = json.dumps(parsed_json2.get("structured_json", {})) if success2 and parsed_json2 else "{}"
+                    merged_struct = self.check_self_consistency(struct1, struct2)
+                    
+                    best_parsed = parsed_json1 if success1 and parsed_json1 else parsed_json2
+                    final_output = {
+                        "raw_transcription": best_parsed.get("raw_transcription", "") if best_parsed else "",
+                        "structured_json": merged_struct
+                    }
                 else:
-                    raw_ocr, ocr_fallback = content1.strip() or content2.strip() or FALLBACK_OCR_MESSAGE, False
-                print(f"[CP5] returning raw_ocr={raw_ocr!r}, fallback_used={ocr_fallback}")
-                return raw_ocr, ocr_fallback
+                    final_output = {
+                        "raw_transcription": "",
+                        "structured_json": {}
+                    }
+            else:
+                content = self._run_openai_completion(messages, is_json=True)
+                parsed_json, success = parse_json_robust(content)
+                
+                if success and parsed_json:
+                    final_output = {
+                        "raw_transcription": parsed_json.get("raw_transcription", ""),
+                        "structured_json": parsed_json.get("structured_json", {})
+                    }
+                else:
+                    final_output = {
+                        "raw_transcription": "",
+                        "structured_json": {}
+                    }
 
-            content = self._run_gemini_ocr([system_msg, human_msg])
-            ocr_json, success = parse_json_robust(content)
-            if success and ocr_json is not None:
-                raw_ocr, ocr_fallback = self.format_ocr_json_to_text(ocr_json), False
-                print(f"[CP5] returning raw_ocr={raw_ocr!r}, fallback_used={ocr_fallback}")
-                return raw_ocr, ocr_fallback
+            logging.info(f"Raw Transcription Length: {len(final_output.get('raw_transcription', ''))} chars")
 
-            cleaned_text = content.strip()
-            if cleaned_text:
-                raw_ocr, ocr_fallback = cleaned_text, False
-                print(f"[CP5] returning raw_ocr={raw_ocr!r}, fallback_used={ocr_fallback}")
-                return raw_ocr, ocr_fallback
-
-            raise RuntimeError("Gemini returned an empty OCR payload.")
+            # Use ensure_ascii=False so Unicode isn't escaped, reducing tokens/size and keeping readability
+            combined_output = json.dumps(final_output, indent=2, ensure_ascii=False)
+            
+            total_duration = time.time() - total_start_time
+            logging.info(f"Total OCR Pipeline completed in {total_duration:.2f}s")
+            
+            print("[CP-OCR-PATH] path=openai_primary_success")
+            return combined_output, False
 
         except Exception as exc:
-            logging.error(f"Gemini OCR extraction failed: {exc}")
+            logging.error(f"OpenAI OCR extraction failed: {exc}")
+            logging.info("Falling back to local Tesseract OCR.")
+            print("[CP-OCR-PATH] path=tesseract_fallback_used")
             fallback_text = self._local_ocr_fallback(preprocessed_bytes)
             if not fallback_text.strip():
                 fallback_text = FALLBACK_OCR_MESSAGE
-            raw_ocr, ocr_fallback = fallback_text, True
-            print(f"[CP5] returning raw_ocr={raw_ocr!r}, fallback_used={ocr_fallback}")
-            return raw_ocr, ocr_fallback
+            
+            fallback_output = {
+                "raw_transcription": fallback_text,
+                "structured_json": {},
+                "ocr_engine": "tesseract_fallback_low_confidence",
+                "warning": "We couldn't read this prescription clearly. Handwritten text often can't be extracted automatically — please retake the photo in better lighting, or type the medicine names manually."
+            }
+            return json.dumps(fallback_output, indent=2, ensure_ascii=False), True

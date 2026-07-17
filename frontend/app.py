@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import urllib.parse
 from dotenv import load_dotenv
+from i18n import t
 
 # Load environment variables
 load_dotenv()
@@ -11,8 +12,8 @@ BACKEND_URL = os.getenv("BACKEND_URL", "https://medclarity-ai.onrender.com")
 
 # Pre-startup keys validation
 missing_keys = []
-if not os.getenv("GEMINI_API_KEY"):
-    missing_keys.append("GEMINI_API_KEY")
+if not os.getenv("OPENAI_API_KEY"):
+    missing_keys.append("OPENAI_API_KEY")
 
 if missing_keys:
     st.error(f"❌ **Missing Configuration:** The following environment variables are missing in `.env`: `{', '.join(missing_keys)}`. Please configure them to run MedClarity AI.")
@@ -928,12 +929,15 @@ if "analysis_done" not in st.session_state:
 
 # --- IMPROVEMENT: SIDEBAR ORGANIZED INTO SECTIONS ---
 with st.sidebar:
-    st.image("https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=300&auto=format&fit=crop", caption="MedClarity Digital Clinic", use_container_width=True) # use_column_width=True replaced immediately with use_container_width=True
+    # Use session state to get the language before the selectbox is rendered
+    current_lang = st.session_state.get("selected_language", "English")
+    
+    st.image("https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=300&auto=format&fit=crop", caption=t("GramCare", current_lang), width="stretch") # use_column_width=True replaced immediately with width="stretch"
     
     # ⚙️ Settings Section
-    st.markdown("### ⚙️ Settings")
+    st.markdown(f"### {t('settings', current_lang)}")
     target_lang = st.selectbox(
-        "🗣️ Select Language / மொழி",
+        t("select_language", current_lang),
         ["English", "Tamil", "Hindi", "Telugu", "Kannada", "Malayalam", "Bengali", "Marathi"],
         key="selected_language"
     )
@@ -965,51 +969,64 @@ with st.sidebar:
     if uploaded_file is not None:
         file_key = f"processed_{uploaded_file.name}_{uploaded_file.size}"
         if st.session_state.get("last_uploaded_file_key") != file_key:
-            with st.spinner("🤖 Agent 1: Reading prescription image (Vision OCR)..."):
-                try:
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    res = requests.post(f"{BACKEND_URL}/api/ocr", files=files, timeout=60)
-                    st.write("[CP6-frontend] raw json:", res.json())
-                    if res.status_code == 200:
-                        res_json = res.json()
-                        ocr_result = (res_json.get("raw_ocr") or "").strip()
-                        if not ocr_result:
-                            ocr_result = "[unclear] Unable to extract readable text from the prescription image."
+            if st.button(t("extract_ocr", target_lang), width="stretch"):
+                with st.spinner("🤖 Agent 1: Reading prescription image (Vision OCR)..."):
+                    try:
+                        import json
+                        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                        res = requests.post(f"{BACKEND_URL}/api/ocr", files=files, timeout=60)
+                        st.write("[CP6-frontend] raw json:", res.json())
+                        if res.status_code == 200:
+                            res_json = res.json()
+                            ocr_result_raw = (res_json.get("raw_ocr") or "").strip()
+                            if not ocr_result_raw:
+                                ocr_result_raw = "[unclear] Unable to extract readable text from the prescription image."
 
-                        st.session_state.raw_ocr = ocr_result
-                        st.session_state.prescription_text = ocr_result
-                        st.session_state.ocr_text = ocr_result
-                        st.session_state.step = 1
-                        st.session_state.analysis_done = False
-                        st.session_state.last_uploaded_file_key = file_key
-                        if res_json.get("ocr_fallback"):
-                            st.warning("⚠️ Gemini quota reached — using local OCR. Accuracy may vary for handwritten text.")
+                            # Try to parse the new JSON structured raw_ocr
+                            parsed_text = ocr_result_raw
+                            try:
+                                parsed_json = json.loads(ocr_result_raw)
+                                if isinstance(parsed_json, dict) and "raw_transcription" in parsed_json:
+                                    parsed_text = parsed_json.get("raw_transcription") or "[unclear] Empty transcription"
+                            except Exception:
+                                pass # Fall back to the raw string if parsing fails
+                                
+                            print(f"[CP-FRONTEND-OCR-PARSED] displaying: {parsed_text[:100]}...")
+
+                            st.session_state.raw_ocr = ocr_result_raw
+                            st.session_state.prescription_text = parsed_text
+                            st.session_state.ocr_text = parsed_text
+                            st.session_state.step = 1
+                            st.session_state.analysis_done = False
+                            st.session_state.last_uploaded_file_key = file_key
+                            if res_json.get("ocr_fallback"):
+                                st.warning("⚠️ Gemini quota reached — using local OCR. Accuracy may vary for handwritten text.")
+                            else:
+                                st.success("Prescription text read successfully! Please verify it below.")
+                            rerun_app()
                         else:
-                            st.success("Prescription text read successfully! Please verify it below.")
-                        rerun_app()
-                    else:
-                        error_detail = ""
-                        try:
-                            error_detail = res.json().get("error", res.text[:300])
-                        except Exception:
-                            error_detail = res.text[:300]
-                        st.error(f"❌ **OCR API Error (HTTP {res.status_code}):** {error_detail}")
-                        st.warning("Using offline medicine parser fallback.")
+                            error_detail = ""
+                            try:
+                                error_detail = res.json().get("error", res.text[:300])
+                            except Exception:
+                                error_detail = res.text[:300]
+                            st.error(f"❌ **OCR API Error (HTTP {res.status_code}):** {error_detail}")
+                            st.warning("Using offline medicine parser fallback.")
+                            fallback_text = ""
+                            st.session_state.prescription_text = fallback_text
+                            st.session_state.ocr_text = fallback_text
+                            st.session_state.step = 1
+                            st.session_state.last_uploaded_file_key = file_key
+                            rerun_app()
+                    except Exception as e:
+                        st.error(f"❌ **Connection Error:** {str(e)}")
+                        st.warning("Vision API offline. Using local parser fallback.")
                         fallback_text = ""
                         st.session_state.prescription_text = fallback_text
                         st.session_state.ocr_text = fallback_text
                         st.session_state.step = 1
                         st.session_state.last_uploaded_file_key = file_key
                         rerun_app()
-                except Exception as e:
-                    st.error(f"❌ **Connection Error:** {str(e)}")
-                    st.warning("Vision API offline. Using local parser fallback.")
-                    fallback_text = ""
-                    st.session_state.prescription_text = fallback_text
-                    st.session_state.ocr_text = fallback_text
-                    st.session_state.step = 1
-                    st.session_state.last_uploaded_file_key = file_key
-                    rerun_app()
 
         # --- IMPROVEMENT: PRIVACY - Delete uploaded image from memory ---
         uploaded_file = None
@@ -1020,7 +1037,7 @@ with st.sidebar:
     st.markdown("### 📋 Quick Actions")
     
     # CHANGED: Sample prescription auto-triggers full analysis
-    if st.button("⚡ Try Sample Prescription", use_container_width=True):
+    if st.button(t("try_sample", target_lang), width="stretch"):
         st.session_state.raw_ocr = (
             "Dr. Anjali Sharma, MD | Patient: Vignesh Kumar (Age: 52) | Date: 26/05/2026 | "
             "Symptoms: Dry cough, high fever, throat pain. | "
@@ -1035,7 +1052,7 @@ with st.sidebar:
         rerun_app()
         
     # Quick action: Load Last processed cache
-    if st.button("📋 View Last Prescription", use_container_width=True):
+    if st.button(t("view_last", target_lang), width="stretch"):
         if st.session_state.last_prescription:
             st.session_state.processed_data = st.session_state.last_prescription
             st.session_state.step = 2
@@ -1047,7 +1064,7 @@ with st.sidebar:
     
     # 🗄️ Reminders Section (SQLite)
     st.markdown("### 🗄️ Reminders")
-    if st.button("🔄 Refresh Database", use_container_width=True):
+    if st.button(t("refresh_db", target_lang), width="stretch"):
         rerun_app()
         
     try:
@@ -1085,7 +1102,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- IMPROVEMENT: FIRST TIME HERE? EXPANDER ---
-with st.expander("❓ First time here? / இங்க முதல் முறையா வர்றீங்களா? (Click to view instructions)", expanded=False):
+with st.expander(f"❓ {t('first_time', current_lang)} ({t('instructions', current_lang)})", expanded=False):
     st.markdown("""
     ### English Instructions:
     1. **Upload or Select**: Upload a photo of a prescription in the sidebar, or click **⚡ Try Sample Prescription**.
@@ -1126,15 +1143,32 @@ elif st.session_state.step == 1 and not st.session_state.get("analysis_done"):
     st.markdown("### 📝 Verify and Correct Prescription Text")
     st.info("Sometimes AI can misread handwritten prescriptions. Please check the text below and correct any errors before processing.")
 
+    response_data = st.session_state.get("raw_ocr", "")
+    parsed_text = response_data
+    try:
+        import json
+        parsed_json = json.loads(response_data)
+        if isinstance(parsed_json, dict) and "raw_transcription" in parsed_json:
+            parsed_text = parsed_json.get("raw_transcription", response_data)
+    except Exception:
+        pass
+    
+    value_used_for_display = parsed_text if parsed_text else st.session_state.get("ocr_text", "")
+    
+    print(f"[CP-FRONTEND-OCR] raw response received: {response_data}")
+    print(f"[CP-FRONTEND-OCR-PARSED] displaying: {parsed_text[:100]}...")
+    print(f"[CP-FRONTEND-OCR] field being rendered in text box: {value_used_for_display}")
+    print(f"[CP-FRONTEND-OCR] type: {type(value_used_for_display)}")
+
     corrected_text = st.text_area(
         "Prescription Text (Editable)",
-        value=st.session_state.get("ocr_text", ""),
+        value=value_used_for_display,
         height=220,
         key="corrected_prescription"
     )
 
     # Single primary Analyse button – hidden once analysis_done is True
-    if st.button("🔍 Analyse My Prescription", type="primary", use_container_width=True):
+    if st.button(t("analyse_prescription", target_lang), type="primary", width="stretch"):
         st.session_state.prescription_text = corrected_text
         # run_full_pipeline writes all state (processed_data, step=2, analysis_done=True)
         run_full_pipeline(st.session_state.prescription_text, target_lang, lang_iso)
@@ -1145,7 +1179,7 @@ elif st.session_state.step == 2:
     data = st.session_state.processed_data
     
     # Reset button – also clears the analysis_done flag so the Analyse button reappears next time
-    if st.button("🔄 Analyze Another Prescription", use_container_width=True):
+    if st.button(t("analyze_another", target_lang), width="stretch"):
         st.session_state.step = 0
         st.session_state.processed_data = None
         st.session_state.raw_ocr = ""
@@ -1208,27 +1242,32 @@ elif st.session_state.step == 2:
             </div>
             """, unsafe_allow_html=True)
 
-        # Safety advisory warning banner from Coordinator
-        emergency = data.get("emergency_alert", False)
+        # Medicine Safety Advisory (Issue 2)
+        precautions = data.get("precautions_en", [])
         advisory_en = data.get("patient_advisory_en", "")
-        if emergency:
-            st.markdown(f"""
-            <div class="danger-advisory">
-                <h3>🚨 EMERGENCY SAFETY WARNING</h3>
-                <p><strong>Clinical Advisory:</strong> {advisory_en}</p>
-                <p><strong>Detected Red-Flag Symptoms:</strong> {', '.join(data.get('red_flags', []))}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
+        emergency = data.get("emergency_alert", False)
+        
+        # Only display if there's actual advisory or precautions
+        if advisory_en or precautions:
+            st.markdown("### ⚠️ Medicine Safety Notes")
+            if advisory_en:
+                if emergency:
+                    st.error(f"**Critical Interaction Alert:** {advisory_en}")
+                else:
+                    st.info(f"**Advisory:** {advisory_en}")
+            if precautions:
+                for p in precautions:
+                    st.warning(f"• {p}")
+
         # CHANGED: Regional language tab shown first for rural users
-        tab_regional, tab_en = st.tabs([f"🇮🇳 {target_lang} Guide", "🇺🇸 English Guide"])
+        tab_regional, tab_en = st.tabs([t("regional_guide", target_lang), "🇺🇸 English Guide"])
 
         with tab_regional:
             translated_guide = data.get("translated_guide", {})
-            st.markdown(f"### வாழ்த்துக்கள் / Greeting: *{translated_guide.get('patient_greeting', '')}*")
-            st.success(f"📋 **விளக்கம் / Summary:** {translated_guide.get('simple_summary', '')}")
+            st.markdown(f"### {t('greeting', target_lang)} *{translated_guide.get('patient_greeting', '')}*")
+            st.success(f"📋 **{t('summary', target_lang)}** {translated_guide.get('simple_summary', '')}")
             
-            st.markdown(f"#### 💊 மருந்துகள் / Prescribed Medications ({target_lang}):")
+            st.markdown(f"#### 💊 {t('prescribed_medications', target_lang)} ({target_lang}):")
             for med in translated_guide.get("medicines", []):
                 # --- IMPROVEMENT: COLOR CODED CARDS FOR RURAL READABILITY ---
                 # green = safe, yellow = take with food, red = warning/opioid/sedative
@@ -1245,15 +1284,15 @@ elif st.session_state.step == 2:
                 st.markdown(f"""
                 <div class="{card_class}">
                     <h4 style="margin-top:0px; color:#bc8cff;">💊 {med['name']}</h4>
-                    <p style="margin:5px 0;">📏 <strong>அளவு (Dosage):</strong> {med['simple_dosage']}</p>
-                    <p style="margin:5px 0;">🕒 <strong>நேரம் (Timing):</strong> {med['simple_timing']}</p>
-                    <p style="margin:5px 0;">🎯 <strong>காரணம் (Purpose):</strong> {med['simple_purpose']}</p>
-                    <p style="margin:5px 0;">⏳ <strong>கால அளவு (Duration):</strong> {med['simple_duration']}</p>
+                    <p style="margin:5px 0;">📏 <strong>{t('dosage', target_lang)}:</strong> {med['simple_dosage']}</p>
+                    <p style="margin:5px 0;">🕒 <strong>{t('alarm_time', target_lang)}:</strong> {med['simple_timing']}</p>
+                    <p style="margin:5px 0;">🎯 <strong>Purpose:</strong> {med['simple_purpose']}</p>
+                    <p style="margin:5px 0;">⏳ <strong>{t('duration', target_lang)}:</strong> {med['simple_duration']}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
             if translated_guide.get("helpful_tips"):
-                st.markdown("#### 💡 நலக்குறிப்புகள் / Care Tips:")
+                st.markdown(f"#### 💡 {t('care_tips', target_lang)}")
                 for tip in translated_guide.get("helpful_tips", []):
                     st.markdown(f"- {tip}")
 
@@ -1347,7 +1386,7 @@ elif st.session_state.step == 2:
         # --- IMPROVEMENT: READ EVERYTHING ALOUD BUTTON ---
         # Merges emergency advisors, English guides, and translated guides to play a full combined audio.
         st.markdown("---")
-        if st.button("🔊 Read Everything Aloud (முழுவதையும் கேட்க)", use_container_width=True):
+        if st.button(t("read_aloud", target_lang), width="stretch"):
             full_text = f"Safety Advisory: {advisory_en}. Care Summary: {translated_guide.get('simple_summary', '')}."
             for idx, med in enumerate(translated_guide.get("medicines", [])):
                 full_text += f" Medicine {idx+1}: {med['name']}. dosage: {med['simple_dosage']}. timing: {med['simple_timing']}. purpose: {med['simple_purpose']}."
@@ -1384,17 +1423,18 @@ elif st.session_state.step == 2:
         # --- IMPROVEMENT: MEDICATION DATABASE TIMELINE AND VISUAL SCHEDULER CARDS ---
         st.markdown("### 🕒 Auto-Generated Medication Timeline & Alarms")
         reminders = data.get("reminders", [])
+        print(f"[CP-SCHEDULE-DISPLAY] condition_checked=bool(reminders), value={bool(reminders)}")
         if reminders:
             df = pd.DataFrame(reminders)
             df.rename(columns={
-                "medicine_name": "Medicine Name",
-                "dosage": "Dosage",
-                "time_of_day": "Alarm Time",
-                "relation_to_food": "Food Direction",
-                "duration": "Duration",
+                "medicine_name": t("medicine_name", target_lang),
+                "dosage": t("dosage", target_lang),
+                "time_of_day": t("alarm_time", target_lang),
+                "relation_to_food": t("food_direction", target_lang),
+                "duration": t("duration", target_lang),
                 "frequency": "Frequency"
             }, inplace=True)
-            st.dataframe(df[["Medicine Name", "Dosage", "Alarm Time", "Food Direction", "Duration"]], use_container_width=True)
+            st.dataframe(df[[t("medicine_name", target_lang), t("dosage", target_lang), t("alarm_time", target_lang), t("food_direction", target_lang), t("duration", target_lang)]], width="stretch")
             st.success("🎉 Medicine alarms have been successfully generated and saved to your local SQLite database reminder repository!")
             
             # --- NEW FEATURE: MEDICINE SCHEDULE CARD (EMOJIS GRID) ---
@@ -1405,7 +1445,7 @@ elif st.session_state.step == 2:
             with col_m:
                 st.markdown("""
                 <div style="background-color: rgba(255, 235, 204, 0.1); border: 1px solid #ffaa00; border-radius: 8px; padding: 15px; min-height: 180px;">
-                    <h4 style="color: #ffaa00; margin-top:0px;">☀️ Morning (காலை)</h4>
+                    <h4 style="color: #ffaa00; margin-top:0px;">{t('morning', target_lang)}</h4>
                 """, unsafe_allow_html=True)
                 if morning_meds:
                     for m in morning_meds:
@@ -1417,7 +1457,7 @@ elif st.session_state.step == 2:
             with col_a:
                 st.markdown("""
                 <div style="background-color: rgba(204, 235, 255, 0.1); border: 1px solid #0099ff; border-radius: 8px; padding: 15px; min-height: 180px;">
-                    <h4 style="color: #0099ff; margin-top:0px;">⛅ Afternoon (மதியம்)</h4>
+                    <h4 style="color: #0099ff; margin-top:0px;">{t('afternoon', target_lang)}</h4>
                 """, unsafe_allow_html=True)
                 if afternoon_meds:
                     for m in afternoon_meds:
@@ -1429,7 +1469,7 @@ elif st.session_state.step == 2:
             with col_n:
                 st.markdown("""
                 <div style="background-color: rgba(204, 204, 255, 0.1); border: 1px solid #7700ff; border-radius: 8px; padding: 15px; min-height: 180px;">
-                    <h4 style="color: #7700ff; margin-top:0px;">🌙 Night (இரவு)</h4>
+                    <h4 style="color: #7700ff; margin-top:0px;">{t('night', target_lang)}</h4>
                 """, unsafe_allow_html=True)
                 if night_meds:
                     for m in night_meds:
@@ -1450,11 +1490,11 @@ elif st.session_state.step == 2:
             sched_txt += "Disclaimer: This is for understanding only. Always consult your prescribing doctor."
             
             st.download_button(
-                label="📥 Download Schedule (அட்டவணையை பதிவிறக்க)",
+                label="📥 Download Schedule",
                 data=sched_txt,
                 file_name=f"{patient_name.replace(' ', '_')}_medication_schedule.txt",
                 mime="text/plain",
-                use_container_width=True
+                width="stretch"
             )
             
         else:
@@ -1533,7 +1573,7 @@ elif st.session_state.step == 2:
             question_text = typed_question
             
         if question_text:
-            if st.button("💬 Get Answer", use_container_width=True):
+            if st.button(t("get_answer", target_lang), width="stretch"):
                 # Context block for the LLM
                 context_string = f"Prescription Text: {st.session_state.prescription_text}\n"
                 context_string += f"English Summary: {simple_en.get('simple_summary', '')}\n"

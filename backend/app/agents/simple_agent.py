@@ -3,8 +3,9 @@ import os
 import time
 from typing import List, Optional
 from pydantic import BaseModel, Field
-import google.generativeai as genai
 from app.config import settings
+from app.llm.openai_client import get_openai_client
+import openai
 
 class SimplifiedMedicineItem(BaseModel):
     name: str = Field(description="Medical/Brand name of the medicine")
@@ -34,11 +35,15 @@ Guidelines:
 
 class SimplificationAgent:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.client = None
         if self.api_key:
-            genai.configure(api_key=self.api_key)
+            try:
+                self.client = get_openai_client(self.api_key)
+            except Exception as e:
+                print(f"OpenAI simplification client initialization failed: {e}")
         else:
-            print(f"Gemini simplification client initialization failed: No API Key")
+            print(f"OpenAI simplification client initialization failed: No API Key")
 
     def simplify(self, extracted_details: str, safety_details: str) -> SimplifiedPrescription:
         """
@@ -50,7 +55,7 @@ class SimplificationAgent:
             f"You must return a JSON object that adheres strictly to this JSON schema:\n{schema_json}"
         )
         
-        if not self.api_key:
+        if not self.client:
             return SimplifiedPrescription(
                 patient_greeting="Hello!",
                 simple_summary="The prescription is being shared in a simple local format because the live simplifier is unavailable.",
@@ -61,14 +66,18 @@ class SimplificationAgent:
         for attempt in range(2):
             start_time = time.time()
             try:
-                model = genai.GenerativeModel(
-                    "gemini-3.1-flash-lite",
-                    system_instruction=system_instructions,
-                    generation_config={"response_mime_type": "application/json", "temperature": 0.3}
+                print("[CP-AGENT-CONFIG-V2] agent=Simplification, reasoning_effort=low")
+                response = self.client.chat.completions.create(
+                    model="gpt-5-mini",
+                    reasoning_effort="low",
+                    messages=[
+                        {"role": "system", "content": system_instructions},
+                        {"role": "user", "content": f"Simplify this extracted prescription details and safety alerts:\n\n{extracted_details}\n\nSafety Report:\n{safety_details}"}
+                    ],
+                    response_format={"type": "json_object"}
                 )
-                response = model.generate_content(f"Simplify this extracted prescription details and safety alerts:\n\n{extracted_details}\n\nSafety Report:\n{safety_details}")
                 elapsed_time = time.time() - start_time
-                content = response.text
+                content = response.choices[0].message.content
                 
                 if content.startswith("```json"):
                     content = content[7:]
@@ -81,23 +90,20 @@ class SimplificationAgent:
                 err_str = str(e).lower()
                 err_type = type(e).__name__
                 
-                http_status = "N/A"
-                if "429" in err_str: http_status = "429"
-                elif "503" in err_str: http_status = "503"
-                elif "403" in err_str: http_status = "403"
-                elif "400" in err_str: http_status = "400"
+                http_status = getattr(e, "status_code", "N/A")
 
                 import logging
                 logging.warning(
-                    f"Gemini Simplification Agent attempt {attempt + 1}/2 failed. "
-                    f"Timestamp: {time.time()}, Agent: Simple, SDK: google.generativeai, Model: gemini-3.1-flash-lite, "
+                    f"OpenAI Simplification Agent attempt {attempt + 1}/2 failed. "
+                    f"Timestamp: {time.time()}, Agent: Simple, SDK: openai, Model: gpt-5-mini, "
                     f"API Key Source: Env, Retry Count: {attempt + 1}, Exception Type: {err_type}, "
                     f"HTTP Status: {http_status}, Response Time: {elapsed_time:.2f}s, Error: {e}"
                 )
 
-                if "429" in err_str or "quota" in err_str:
+                is_retryable = isinstance(e, (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError))
+                if is_retryable or "429" in err_str or "quota" in err_str.lower():
                     if attempt == 0:
-                        print("Gemini rate limit hit. Retrying in 10 seconds...")
+                        print("OpenAI rate limit hit or retryable error. Retrying in 10 seconds...")
                         time.sleep(10)
                     else:
                         raise RuntimeError(f"Simplification agent processing failed: {err_type}") from e

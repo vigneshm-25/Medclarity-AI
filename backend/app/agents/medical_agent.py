@@ -5,8 +5,9 @@ import re
 import traceback
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
-import google.generativeai as genai
 from app.config import settings
+from app.llm.openai_client import get_openai_client
+import openai
 
 class MedicineItem(BaseModel):
     raw_text: Optional[str] = Field(default=None, description="The exact original prescription text for this medicine.")
@@ -41,6 +42,26 @@ CRITICAL INSTRUCTIONS FOR MEDICINE EXTRACTION:
 - Extract ONLY true medicines into the 'medicines' array.
 - NEVER extract non-medicines (such as Patient Name, Doctor Name, Age, Sex, Date, Chief Complaint, Symptoms, Diagnosis, Vitals, BP, PR, Temperature, Pulse, Advice, Notes, UHID, IP Number, Signature, Confidence labels) into the 'medicines' array.
 - Never include advice as medicine (e.g. 'Adequate fluid intake', 'Drink water', 'ORS advice', 'Rest', 'Follow up', 'Review after 5 days').
+IMPORTANT: Lines under an 'Adv:' or 'Advice' heading can contain BOTH real medicines and general advice. Check each line individually:
+- A line naming a drug/substance with a dosage, route (iv/oral/im), or frequency (e.g. 'stat', 'daily') IS a medicine, even if it appears under an 'Adv:' heading. Example: '5% Dextrose (iv) stat' is a medicine.
+- A line with no drug name — general instructions like 'drink more water', 'take rest', 'follow up in 5 days' — is NOT a medicine, even if it looks similar in format.
+- 'ORS' (Oral Rehydration Salts/Solution) followed by a quantity (e.g. '2 sachets') IS a medicine, not general advice, since it is a specific administered substance with a dosage.
+
+EXAMPLE — apply this exact pattern:
+Input text:
+'Adv:
+1) 5% Dextrose (iv) stat.
+-> Adequate fluid intake
+-> ORS 2 sachets.'
+
+Correct extraction:
+medicines: [
+  {"name": "5% Dextrose", "route": "IV", "frequency": "stat", "raw_text": "5% Dextrose (iv) stat."},
+  {"name": "ORS", "dosage": "2 sachets", "raw_text": "ORS 2 sachets."}
+]
+warnings: ["Adequate fluid intake"]
+
+Note: 'Adequate fluid intake' has no drug name, so it stays in warnings. The other two lines name a specific substance with a route/dosage, so they go in medicines — even though all three lines appear under the same 'Adv:' heading with similar bullet formatting.
 - Never infer medicines.
 - Never hallucinate medicines.
 - If no medicine exists in the text, return an empty medicines list.
@@ -143,11 +164,16 @@ def extract_medicine_section(ocr_text: str) -> str:
 
 class MedicalAgent:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.client = None
         if self.api_key:
-            genai.configure(api_key=self.api_key)
+            try:
+                self.client = get_openai_client(self.api_key)
+            except Exception as e:
+                print(f"OpenAI client initialization failed: {e}")
         else:
-            print(f"Gemini client initialization failed: No API Key")
+            print(f"OpenAI client initialization failed: No API Key")
+        print(f"[CP-MEDICAL-PROMPT-V2] {SYSTEM_PROMPT}")
 
     def build_prompt(self, medicine_text: str) -> str:
         schema_json = json.dumps(ExtractedPrescription.model_json_schema())
@@ -158,23 +184,24 @@ class MedicalAgent:
         return system_instructions
         
     def call_llm(self, system_instructions: str, user_content: str) -> str:
-        if not self.api_key:
-            raise ValueError("Gemini client not initialized")
+        if not self.client:
+            raise ValueError("OpenAI client not initialized")
             
         for attempt in range(2):
             start_time = time.time()
             try:
-                model = genai.GenerativeModel(
-                    "gemini-3.1-flash-lite",
-                    system_instruction=system_instructions,
-                    generation_config={
-                        "response_mime_type": "application/json",
-                        "temperature": 0.1
-                    }
+                print("[CP-AGENT-CONFIG-V2] agent=Medical, reasoning_effort=low")
+                response = self.client.chat.completions.create(
+                    model="gpt-5-mini",
+                    reasoning_effort="low",
+                    messages=[
+                        {"role": "system", "content": system_instructions},
+                        {"role": "user", "content": f"Analyze this medical transcript and extract details:\n\n{user_content}"}
+                    ],
+                    response_format={"type": "json_object"}
                 )
-                response = model.generate_content(f"Analyze this medical transcript and extract details:\n\n{user_content}")
                 elapsed_time = time.time() - start_time
-                content = response.text
+                content = response.choices[0].message.content
                 
                 # Try to clean up Markdown if returned
                 if content.startswith("```json"):
@@ -182,30 +209,27 @@ class MedicalAgent:
                 if content.endswith("```"):
                     content = content[:-3]
                     
-                print(f"[RAW GEMINI RESPONSE]\n{content}")
+                print(f"[RAW OPENAI RESPONSE]\n{content}")
                 return content
             except Exception as e:
                 elapsed_time = time.time() - start_time
                 err_str = str(e).lower()
                 err_type = type(e).__name__
                 
-                http_status = "N/A"
-                if "429" in err_str: http_status = "429"
-                elif "503" in err_str: http_status = "503"
-                elif "403" in err_str: http_status = "403"
-                elif "400" in err_str: http_status = "400"
+                http_status = getattr(e, "status_code", "N/A")
 
                 import logging
                 logging.warning(
-                    f"Gemini Medical Agent attempt {attempt + 1}/2 failed. "
-                    f"Timestamp: {time.time()}, Agent: Medical, SDK: google.generativeai, Model: gemini-3.1-flash-lite, "
+                    f"OpenAI Medical Agent attempt {attempt + 1}/2 failed. "
+                    f"Timestamp: {time.time()}, Agent: Medical, SDK: openai, Model: gpt-5-mini, "
                     f"API Key Source: Env, Retry Count: {attempt + 1}, Exception Type: {err_type}, "
                     f"HTTP Status: {http_status}, Response Time: {elapsed_time:.2f}s, Error: {e}"
                 )
 
-                if "429" in err_str or "quota" in err_str.lower():
+                is_retryable = isinstance(e, (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError))
+                if is_retryable or "429" in err_str or "quota" in err_str.lower():
                     if attempt == 0:
-                        print("Gemini rate limit hit. Retrying in 10 seconds...")
+                        print("OpenAI rate limit hit or retryable error. Retrying in 10 seconds...")
                         time.sleep(10)
                     else:
                         raise e
@@ -274,10 +298,10 @@ class MedicalAgent:
             return result
             
         except Exception as e:
-            print(f"=== GEMINI MEDICAL AGENT ERROR ===")
+            print(f"=== OPENAI MEDICAL AGENT ERROR ===")
             print(f"Exception Type: {type(e).__name__}")
             print(f"Exception Message: {str(e)}")
-            print(f"Raw Gemini Response content (if any):\n{content}")
+            print(f"Raw OpenAI Response content (if any):\n{content}")
             print(f"Traceback:")
             traceback.print_exc()
             print("=" * 80)

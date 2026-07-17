@@ -52,14 +52,14 @@ gramcare-ai/
 ### Prerequisites
 
 1. Python 3.9, 3.10, or 3.11.
-2. A Gemini API key from Google AI Studio.
+2. An OpenAI API key.
 
 ### Environment Variables
 
 Create a `.env` file in the project root with the required values:
 
 ```bash
-GEMINI_API_KEY=YOUR_ACTUAL_GEMINI_API_KEY_HERE
+OPENAI_API_KEY=YOUR_ACTUAL_OPENAI_API_KEY_HERE
 DATABASE_URL=sqlite:///./backend/data/local_db.db
 BACKEND_URL=http://localhost:8000
 ```

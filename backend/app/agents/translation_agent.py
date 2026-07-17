@@ -3,8 +3,9 @@ import os
 import time
 from typing import List, Optional
 from pydantic import BaseModel, Field
-import google.generativeai as genai
 from app.config import settings
+from app.llm.openai_client import get_openai_client
+import openai
 
 class TamilMedicineItem(BaseModel):
     name: str = Field(description="Medicine name in Tamil script alongside English brand name, e.g., பாராசிட்டமால் (Paracetamol)")
@@ -30,11 +31,15 @@ Guidelines:
 
 class TranslationAgent:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.client = None
         if self.api_key:
-            genai.configure(api_key=self.api_key)
+            try:
+                self.client = get_openai_client(self.api_key)
+            except Exception as e:
+                print(f"OpenAI translation client initialization failed: {e}")
         else:
-            print(f"Gemini translation client initialization failed: No API Key")
+            print(f"OpenAI translation client initialization failed: No API Key")
 
     def translate_to_tamil(self, english_guide_json: str, safety_advisory_text: str) -> TamilPrescription:
         """
@@ -54,7 +59,7 @@ class TranslationAgent:
         
         user_prompt = f"Translate this simplified English prescription and safety alert into {target_lang}:\n\nEnglish Guide:\n{english_guide_json}\n\nSafety Advisory:\n{safety_advisory_text}"
         
-        if not self.api_key:
+        if not self.client:
             return TamilPrescription(
                 patient_greeting=f"Hello {target_lang}!",
                 simple_summary="The prescription summary is being shown in a simple local format because the live translator is unavailable.",
@@ -66,14 +71,18 @@ class TranslationAgent:
         for attempt in range(2):
             start_time = time.time()
             try:
-                model = genai.GenerativeModel(
-                    "gemini-3.1-flash-lite",
-                    system_instruction=system_instructions,
-                    generation_config={"response_mime_type": "application/json", "temperature": 0.2}
+                print("[CP-AGENT-CONFIG-V2] agent=Translation, reasoning_effort=low")
+                response = self.client.chat.completions.create(
+                    model="gpt-5-mini",
+                    reasoning_effort="low",
+                    messages=[
+                        {"role": "system", "content": system_instructions},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"}
                 )
-                response = model.generate_content(user_prompt)
                 elapsed_time = time.time() - start_time
-                content = response.text
+                content = response.choices[0].message.content
                 
                 if content.startswith("```json"):
                     content = content[7:]
@@ -86,23 +95,20 @@ class TranslationAgent:
                 err_str = str(e).lower()
                 err_type = type(e).__name__
                 
-                http_status = "N/A"
-                if "429" in err_str: http_status = "429"
-                elif "503" in err_str: http_status = "503"
-                elif "403" in err_str: http_status = "403"
-                elif "400" in err_str: http_status = "400"
+                http_status = getattr(e, "status_code", "N/A")
 
                 import logging
                 logging.warning(
-                    f"Gemini Translation Agent attempt {attempt + 1}/2 failed. "
-                    f"Timestamp: {time.time()}, Agent: Translation, SDK: google.generativeai, Model: gemini-3.1-flash-lite, "
+                    f"OpenAI Translation Agent attempt {attempt + 1}/2 failed. "
+                    f"Timestamp: {time.time()}, Agent: Translation, SDK: openai, Model: gpt-5-mini, "
                     f"API Key Source: Env, Retry Count: {attempt + 1}, Exception Type: {err_type}, "
                     f"HTTP Status: {http_status}, Response Time: {elapsed_time:.2f}s, Error: {e}"
                 )
 
-                if "429" in err_str or "quota" in err_str:
+                is_retryable = isinstance(e, (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError))
+                if is_retryable or "429" in err_str or "quota" in err_str.lower():
                     if attempt == 0:
-                        print("Gemini rate limit hit. Retrying in 10 seconds...")
+                        print("OpenAI rate limit hit or retryable error. Retrying in 10 seconds...")
                         time.sleep(10)
                     else:
                         raise RuntimeError(f"Translation agent regional conversion failed: {err_type}") from e

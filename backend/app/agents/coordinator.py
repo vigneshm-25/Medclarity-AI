@@ -14,7 +14,7 @@ from app.agents.schedule_generator import generate_schedule, ReminderSchedule, R
 
 class CoordinatorAgent:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.OPENAI_API_KEY
 
         self.ocr_agent = OCRAgent(api_key=self.api_key)
         self.medical_agent = MedicalAgent(api_key=self.api_key)
@@ -166,11 +166,41 @@ class CoordinatorAgent:
           3. SimplificationAgent  (depends on Safety result)
           4. TranslationAgent  (depends on Simplification result)
         """
+        print("[CP-AGENT-EXECUTION-V2] mode=parallel_after_medical")
         try:
+            import time
+            print("[CP-AGENT-CONFIG] agent=Medical, model=gpt-5-mini, reasoning_effort=None")
+            t0 = time.time()
             clinical_extracted = self.medical_agent.parse_prescription(ocr_text=raw_ocr)
+            print(f"[CP-AGENT-TIMING] agent=Medical, duration={time.time()-t0:.2f}s")
         except Exception as exc:
             print(f"Medical agent fallback triggered: {exc}")
             clinical_extracted = self._build_fallback_clinical_extraction(raw_ocr)
+
+        # Ensure we pass the correct structured list from OCR if it was lost in Medical Agent parsing
+        try:
+            ocr_parsed = json.loads(raw_ocr)
+            if isinstance(ocr_parsed, dict) and "structured_json" in ocr_parsed:
+                structured_json = ocr_parsed["structured_json"]
+                if "medicines" in structured_json and isinstance(structured_json["medicines"], list):
+                    ocr_meds = structured_json["medicines"]
+                    valid_meds = []
+                    for m in ocr_meds:
+                        if isinstance(m, dict) and m.get("name"):
+                            valid_meds.append(MedicineItem(
+                                name=m.get("name", "Unknown"),
+                                dosage=m.get("dosage"),
+                                route=m.get("route"),
+                                frequency=m.get("frequency"),
+                                timing=m.get("timing"),
+                                relation_to_food=m.get("relation_to_food"),
+                                duration=m.get("duration"),
+                                purpose=m.get("purpose")
+                            ))
+                    if valid_meds:
+                        clinical_extracted.medicines = valid_meds
+        except Exception as e:
+            print(f"DEBUG: Could not parse OCR raw json: {e}")
 
         clinical_json = json.dumps(clinical_extracted.model_dump(), default=str)
 
@@ -187,19 +217,68 @@ class CoordinatorAgent:
         print(f"-------------------------------------------------")
         print(f"--- DEBUG: CLINICAL JSON (Medicines Extracted) ---\n{clinical_json}\n")
 
+        def _run_safety():
+            import time
+            print("[CP-AGENT-CONFIG] agent=Safety, model=gpt-5, reasoning_effort=None")
+            t0 = time.time()
+            res = self.safety_agent.evaluate_safety(clinical_json)
+            print(f"[CP-AGENT-TIMING] agent=Safety, duration={time.time()-t0:.2f}s")
+            return res
+
+        def _run_simple():
+            import time
+            print("[CP-AGENT-CONFIG] agent=Simplification, model=gpt-5-mini, reasoning_effort=None")
+            t0 = time.time()
+            res = self.simple_agent.simplify(
+                extracted_details=clinical_json,
+                safety_details="{}"
+            )
+            print(f"[CP-AGENT-TIMING] agent=Simplification, duration={time.time()-t0:.2f}s")
+            return res
+
+        def _run_translation():
+            import time
+            print("[CP-AGENT-CONFIG] agent=Translation, model=gpt-5-mini, reasoning_effort=None")
+            t0 = time.time()
+            res = self.translation_agent.translate_to_language(
+                english_guide_json=clinical_json,
+                safety_advisory_text="",
+                target_lang=target_lang
+            )
+            print(f"[CP-AGENT-TIMING] agent=Translation, duration={time.time()-t0:.2f}s")
+            return res
+
         try:
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 future_rag = executor.submit(self.rag_agent.retrieve_context, search_query) if self.rag_agent else None
-                future_safety = executor.submit(self.safety_agent.evaluate_safety, clinical_json)
+                future_safety = executor.submit(_run_safety)
+                future_simple = executor.submit(_run_simple)
+                future_translation = executor.submit(_run_translation)
+                
+                print(f"[DEBUG-ISSUE-1] Coordinator passing to Reminder Agent: {[m.model_dump() for m in clinical_extracted.medicines]}")
                 future_reminder = executor.submit(generate_schedule, clinical_extracted.medicines, clinical_extracted.patient_name)
 
                 rag_result = future_rag.result() if future_rag is not None else {"context": "Clinical guidance was not available from the live index.", "sources": [], "low_confidence": True}
                 safety_report = future_safety.result()
+                simplified_en = future_simple.result()
+                translated_guide = future_translation.result()
                 reminder_schedule = future_reminder.result()
+                
+                print(f"[DEBUG-ISSUE-1] Coordinator received from Reminder Agent: {[r.model_dump() for r in reminder_schedule.reminders]}")
         except Exception as exc:
             print(f"Parallel agent fallback triggered: {exc}")
             rag_result = {"context": "Clinical guidance was not available from the live index.", "sources": [], "low_confidence": True}
             safety_report = self._build_fallback_safety_report()
+            simplified_en = self._build_fallback_simplified(
+                patient_name=clinical_extracted.patient_name or "Unknown",
+                medicines=clinical_extracted.medicines,
+                target_lang=target_lang,
+            )
+            translated_guide = self._build_fallback_translation(
+                patient_name=clinical_extracted.patient_name or "Unknown",
+                target_lang=target_lang,
+                medicines=clinical_extracted.medicines,
+            )
             reminder_schedule = self._build_fallback_schedule(clinical_extracted.medicines, clinical_extracted.patient_name)
 
         safety_json = json.dumps(safety_report.model_dump(), default=str)
@@ -215,34 +294,7 @@ class CoordinatorAgent:
 
         low_confidence = bool(ocr_fallback or "[unclear]" in raw_ocr.lower() or rag_low_confidence)
 
-        try:
-            simplified_en = self.simple_agent.simplify(
-                extracted_details=clinical_json,
-                safety_details=safety_json,
-            )
-        except Exception as exc:
-            print(f"Simplification fallback triggered: {exc}")
-            simplified_en = self._build_fallback_simplified(
-                patient_name=clinical_extracted.patient_name or "Unknown",
-                medicines=clinical_extracted.medicines,
-                target_lang=target_lang,
-            )
 
-        simplified_en_json = json.dumps(simplified_en.model_dump(), default=str)
-
-        try:
-            translated_guide = self.translation_agent.translate_to_language(
-                english_guide_json=simplified_en_json,
-                safety_advisory_text=safety_report.patient_advisory,
-                target_lang=target_lang,
-            )
-        except Exception as exc:
-            print(f"Translation fallback triggered: {exc}")
-            translated_guide = self._build_fallback_translation(
-                patient_name=clinical_extracted.patient_name or "Unknown",
-                target_lang=target_lang,
-                medicines=clinical_extracted.medicines,
-            )
 
         from app.utils.drug_validator import validate_drug_name
         drug_suggestions = []

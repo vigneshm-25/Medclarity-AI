@@ -7,7 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 class Settings(BaseSettings):
     # API Keys
-    GEMINI_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
 
     # Database
     DATABASE_URL: str = "sqlite:///./backend/data/local_db.db"
@@ -52,8 +52,8 @@ from dotenv import load_dotenv
 load_dotenv(str(BASE_DIR / ".env"))
 
 missing_keys = []
-if not os.getenv("GEMINI_API_KEY"):
-    missing_keys.append("GEMINI_API_KEY")
+if not os.getenv("OPENAI_API_KEY"):
+    missing_keys.append("OPENAI_API_KEY")
 if missing_keys:
     err_msg = f"CRITICAL CONFIGURATION ERROR: Missing required environment variable(s): {', '.join(missing_keys)}. Please define them in your .env file."
     print("=" * 80)
@@ -65,8 +65,8 @@ settings = Settings()
 # Initialize directories on import
 settings.create_directories()
 print("=" * 60)
-print("GEMINI_API_KEY Loaded:", bool(settings.GEMINI_API_KEY))
-print("First 10 characters:", settings.GEMINI_API_KEY[:10] + "...")
+print("OPENAI_API_KEY Loaded:", bool(settings.OPENAI_API_KEY))
+print("First 10 characters:", settings.OPENAI_API_KEY[:10] + "...")
 print("=" * 60)
 
 

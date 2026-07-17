@@ -39,7 +39,7 @@ DEFAULT_SAFETY_GUIDELINES = """
 
 class RAGAgent:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = api_key or settings.OPENAI_API_KEY
         self.vector_store_path = settings.VECTOR_STORE_DIR
         self.vector_store = None
         self.embeddings = None
