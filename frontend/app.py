@@ -1305,6 +1305,13 @@ elif st.session_state.step == 2:
                 </div>
                 """, unsafe_allow_html=True)
 
+            rag_context = data.get("rag_context")
+            if not rag_context:
+                rag_context = "Explanation unavailable"
+                
+            st.markdown(f"#### 🧠 What this means (Clinical Context)")
+            st.info(rag_context)
+
             if translated_guide.get("helpful_tips"):
                 st.markdown(f"#### 💡 {t('care_tips', target_lang)}")
                 for tip in translated_guide.get("helpful_tips", []):
@@ -1345,6 +1352,13 @@ elif st.session_state.step == 2:
                     <p style="margin:5px 0;">⏳ <strong>How long:</strong> {med['simple_duration']}</p>
                 </div>
                 """, unsafe_allow_html=True)
+
+            rag_context = data.get("rag_context")
+            if not rag_context:
+                rag_context = "Explanation unavailable"
+                
+            st.markdown("#### 🧠 What this means (Clinical Context)")
+            st.info(rag_context)
 
             if simple_en.get("helpful_tips"):
                 st.markdown("#### 💡 Recovery & Care Tips:")
