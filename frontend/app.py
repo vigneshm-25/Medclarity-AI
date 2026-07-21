@@ -659,6 +659,18 @@ def run_full_pipeline(text, target_lang, lang_iso):
             status.write("🔊 Preparing voice audio guide…")
             status.write("✅ Saving reminders to database…")
 
+            # --- ADDED: Logging for debugging Analyse button action ---
+            import json
+            import streamlit.components.v1 as components
+            print(f"[FRONTEND LOG] Analyse button clicked! Sending request to: {BACKEND_URL}/api/process-text")
+            print(f"[FRONTEND LOG] Payload: {json.dumps(payload, indent=2)}")
+            components.html(
+                f"<script>console.log('Analyse triggered! Sending request to: {BACKEND_URL}/api/process-text', {json.dumps(payload)});</script>", 
+                height=0, 
+                width=0
+            )
+            # ---------------------------------------------------------
+
             response = requests.post(
                 f"{BACKEND_URL}/api/process-text",
                 json=payload,
