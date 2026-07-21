@@ -1526,7 +1526,11 @@ elif st.session_state.step == 2:
             )
             
         else:
-            st.warning("No standard schedules could be generated. Please double check prescription guidelines.")
+            extracted_meds = data.get("simplified_en", {}).get("medicines", [])
+            if extracted_meds:
+                st.info("No recurring schedule needed — this prescription contains a one-time or as-directed dose. See the medicine list above for details.")
+            else:
+                st.warning("No medicines were detected for scheduling. Please verify the prescription text above.")
             
         # --- NEW FEATURE: NEARBY SERVICE LOCATORS (GOOGLE MAPS BUTTONS) ---
         st.markdown("### 🏥 Find Nearby Medical Services")

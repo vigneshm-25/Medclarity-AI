@@ -117,10 +117,10 @@ def extract_medicine_section(ocr_text: str) -> str:
     in_medicine_section = False
     
     # Regex to detect start of medicines section
-    med_start_pattern = re.compile(r'^(medicines?|rx|medication|rx:.*|medicines:.*)$', re.IGNORECASE)
+    med_start_pattern = re.compile(r'^[\-\*\s]*(medicines?|rx|medication|advice|adv)(:|\s|$)', re.IGNORECASE)
     
     # Regex to detect stop sections
-    stop_pattern = re.compile(r'^(other notes|advice|adv|impression|imp|diagnosis|bp|pr|pulse|temperature|signature|uhid|doctor name|patient name|chief complaint).*$', re.IGNORECASE)
+    stop_pattern = re.compile(r'^[\-\*\s]*(other notes|impression|imp\.?|diagnosis|bp|pr|rbs|o/e|pulse|temperature|signature|uhid|doctor name|patient name|chief complaint|c/o).*$', re.IGNORECASE)
     
     for line in lines:
         line_clean = line.strip()
@@ -137,7 +137,7 @@ def extract_medicine_section(ocr_text: str) -> str:
             continue
             
         # Check for vitals formats like BP-110/70, PR-60 bpm
-        if stop_pattern.search(line_clean) or re.match(r'^(bp|pr)[\s\-\:]*\d+', line_clean, re.IGNORECASE):
+        if stop_pattern.search(line_clean) or re.match(r'^[\-\*\s]*(bp|pr|rbs)[\s\-\:]*\d+', line_clean, re.IGNORECASE):
             if in_medicine_section:
                 break # We reached the end of the medicine section
                 
@@ -152,7 +152,7 @@ def extract_medicine_section(ocr_text: str) -> str:
                 continue
             
             # Skip obvious metadata and sections
-            if stop_pattern.search(line_clean) or re.match(r'^(bp|pr)[\s\-\:]*\d+', line_clean, re.IGNORECASE):
+            if stop_pattern.search(line_clean) or re.match(r'^[\-\*\s]*(bp|pr|rbs)[\s\-\:]*\d+', line_clean, re.IGNORECASE):
                 continue
             if re.search(r'(age|sex|date|uhid|patient|doctor|complaint)\s*:', line_clean, re.IGNORECASE):
                 continue

@@ -249,6 +249,11 @@ async def process_text(payload: Dict[str, Any], db: Session = Depends(get_db)):
         print(f"[DEBUG-ISSUE-1] API Response returning reminders: {master_payload.get('reminders', [])}")
         return master_payload
     except Exception as e:
+        import traceback
+        print(f"ERROR in /api/process-text: {type(e).__name__} - {str(e)}")
+        print("--- FULL TRACEBACK ---")
+        traceback.print_exc()
+        print("----------------------")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/reminders", response_model=List[Dict[str, Any]])
