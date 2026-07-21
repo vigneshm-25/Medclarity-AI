@@ -1172,20 +1172,22 @@ elif st.session_state.step == 1 and not st.session_state.get("analysis_done"):
     print(f"[CP-FRONTEND-OCR] field being rendered in text box: {value_used_for_display}")
     print(f"[CP-FRONTEND-OCR] type: {type(value_used_for_display)}")
 
-    corrected_text = st.text_area(
-        "Prescription Text (Editable)",
-        value=value_used_for_display,
-        height=220,
-        key="corrected_prescription"
-    )
-
-    # Single primary Analyse button – hidden once analysis_done is True
-    if st.button(t("analyse_prescription", target_lang), type="primary", width="stretch"):
-        st.session_state.prescription_text = corrected_text
-        # run_full_pipeline writes all state (processed_data, step=2, analysis_done=True)
-        run_full_pipeline(st.session_state.prescription_text, target_lang, lang_iso)
-        # Single rerun AFTER all state is committed – never called inside the function
-        rerun_app()
+    with st.form("verify_prescription_form"):
+        corrected_text = st.text_area(
+            "Prescription Text (Editable)",
+            value=value_used_for_display,
+            height=220,
+            key="corrected_prescription"
+        )
+        # Single primary Analyse button – hidden once analysis_done is True
+        submitted = st.form_submit_button(t("analyse_prescription", target_lang), type="primary", use_container_width=True)
+        
+        if submitted:
+            st.session_state.prescription_text = corrected_text
+            # run_full_pipeline writes all state (processed_data, step=2, analysis_done=True)
+            run_full_pipeline(st.session_state.prescription_text, target_lang, lang_iso)
+            # Single rerun AFTER all state is committed – never called inside the function
+            rerun_app()
 
 elif st.session_state.step == 2:
     data = st.session_state.processed_data
