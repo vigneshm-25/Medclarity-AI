@@ -45,7 +45,11 @@ def get_or_create_coordinator():
         try:
             coordinator = CoordinatorAgent()
         except Exception as exc:
+            import traceback
             print(f"WARNING: CoordinatorAgent failed to initialize on demand: {exc}")
+            print("--- FULL TRACEBACK ---")
+            traceback.print_exc()
+            print("----------------------")
             coordinator = None
     return coordinator
 

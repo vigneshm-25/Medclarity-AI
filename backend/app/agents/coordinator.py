@@ -174,7 +174,11 @@ class CoordinatorAgent:
             clinical_extracted = self.medical_agent.parse_prescription(ocr_text=raw_ocr)
             print(f"[CP-AGENT-TIMING] agent=Medical, duration={time.time()-t0:.2f}s")
         except Exception as exc:
+            import traceback
             print(f"Medical agent fallback triggered: {exc}")
+            print("--- FULL TRACEBACK ---")
+            traceback.print_exc()
+            print("----------------------")
             clinical_extracted = self._build_fallback_clinical_extraction(raw_ocr)
 
         # Ensure we pass the correct structured list from OCR if it was lost in Medical Agent parsing
@@ -266,7 +270,11 @@ class CoordinatorAgent:
                 
                 print(f"[DEBUG-ISSUE-1] Coordinator received from Reminder Agent: {[r.model_dump() for r in reminder_schedule.reminders]}")
         except Exception as exc:
+            import traceback
             print(f"Parallel agent fallback triggered: {exc}")
+            print("--- FULL TRACEBACK ---")
+            traceback.print_exc()
+            print("----------------------")
             rag_result = {"context": "Clinical guidance was not available from the live index.", "sources": [], "low_confidence": True}
             safety_report = self._build_fallback_safety_report()
             simplified_en = self._build_fallback_simplified(
