@@ -1,3 +1,4 @@
+import gc
 import io
 import os
 from typing import Dict, Any, List
@@ -11,6 +12,8 @@ from app.database import get_db, init_db
 from app.models import Reminder
 from app.agents.coordinator import CoordinatorAgent
 from app.utils.tts import TTSEngine
+from app.utils.memory import get_memory_usage_mb
+from app.agents.rag_agent import is_embeddings_loaded
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -59,6 +62,8 @@ def startup_event():
     global coordinator
 
     init_db()
+    print(f"[MEM-CHECK] Embeddings loaded: {is_embeddings_loaded()}")
+    print(f"[MEM-CHECK] Post-startup memory: {get_memory_usage_mb():.1f} MB")
 
 @app.get("/")
 def read_root():
@@ -118,6 +123,15 @@ async def upload_prescription(
             db.add(db_reminder)
         
         db.commit()
+
+        # Free raw image bytes and file buffers to optimize memory
+        del image_bytes
+        try:
+            await file.close()
+        except Exception:
+            pass
+        gc.collect()
+
         return master_payload
 
     except HTTPException as he:
@@ -179,6 +193,16 @@ async def run_ocr(file: UploadFile = File(...)):
             "ocr_fallback": ocr_fallback
         }
         print(f"[CP6-backend] final payload: {response_dict}")
+
+        # Explicitly free memory for large image bytes objects
+        del image_bytes
+        try:
+            await file.close()
+        except Exception:
+            pass
+        gc.collect()
+
+        print(f"[MEM-CHECK] Post-OCR memory: {get_memory_usage_mb():.1f} MB")
         return response_dict
 
     except HTTPException as he:
@@ -314,3 +338,7 @@ def stream_audio(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Speech synthesis service failed: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, workers=1, reload=False)

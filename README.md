@@ -71,7 +71,8 @@ cd backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+# Production launch (single worker, no reload to save memory on 512MB RAM):
+uvicorn app.main:app --port 8000 --workers 1
 ```
 
 ### Frontend

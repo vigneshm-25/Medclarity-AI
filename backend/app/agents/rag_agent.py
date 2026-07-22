@@ -1,8 +1,62 @@
 import os
+import sys
 from pathlib import Path
 from typing import Optional
-from langchain_core.documents import Document
 from app.config import settings
+from app.utils.memory import get_memory_usage_mb
+
+# Module-level cached instances for lazy loading
+_embeddings = None
+_faiss_index = None
+
+def is_embeddings_loaded() -> bool:
+    """Returns True if the embeddings model has been loaded into memory."""
+    return _embeddings is not None
+
+def get_embeddings():
+    """Lazy loads and caches the HuggingFace sentence-transformers embeddings model."""
+    global _embeddings
+    if _embeddings is None:
+        print("[MEM-CHECK] Loading embeddings model (first request)...")
+        print("[MEM-CHECK] Embeddings loaded: True (first RAG call)")
+        from langchain_huggingface import HuggingFaceEmbeddings
+        _embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    return _embeddings
+
+def get_faiss_index():
+    """Lazy loads and caches the FAISS vector index."""
+    global _faiss_index
+    if _faiss_index is None:
+        embeddings = get_embeddings()
+        vector_store_path = settings.VECTOR_STORE_DIR
+        index_file = vector_store_path / "index.faiss"
+        if index_file.exists():
+            try:
+                from langchain_community.vectorstores import FAISS
+                _faiss_index = FAISS.load_local(
+                    str(vector_store_path),
+                    embeddings,
+                    allow_dangerous_deserialization=True
+                )
+            except Exception as e:
+                import logging
+                logging.error(f"Error loading local FAISS index: {e}")
+                _faiss_index = None
+
+        if _faiss_index is None:
+            try:
+                backend_path = Path(__file__).resolve().parent.parent.parent
+                if str(backend_path) not in sys.path:
+                    sys.path.append(str(backend_path))
+                from ingest_sources import build_faiss_index
+                _faiss_index = build_faiss_index()
+            except Exception as e:
+                import logging
+                logging.error(f"Error rebuilding FAISS vector database: {e}")
+                raise RuntimeError(f"RAG Index rebuild failed: {str(e)}")
+    return _faiss_index
 
 # Sample trusted clinical guides to seed the RAG automatically so it works out of the box!
 DEFAULT_SAFETY_GUIDELINES = """
@@ -41,8 +95,14 @@ class RAGAgent:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.OPENAI_API_KEY
         self.vector_store_path = settings.VECTOR_STORE_DIR
-        self.vector_store = None
-        self.embeddings = None
+
+    @property
+    def vector_store(self):
+        return get_faiss_index()
+
+    @property
+    def embeddings(self):
+        return get_embeddings()
 
     def seed_default_documents(self):
         """
@@ -52,48 +112,20 @@ class RAGAgent:
         pass
 
     def initialize_vector_store(self):
-        """Loads existing FAISS index or builds a new one from official PDFs."""
-        if self.vector_store is not None:
-            return
-
-        from langchain_community.vectorstores import FAISS
-        from langchain_huggingface import HuggingFaceEmbeddings
-
-        if self.embeddings is None:
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
-
-        index_file = self.vector_store_path / "index.faiss"
-        if index_file.exists():
-            try:
-                # Load locally stored FAISS index
-                self.vector_store = FAISS.load_local(
-                    str(self.vector_store_path), 
-                    self.embeddings,
-                    allow_dangerous_deserialization=True # Required for local loading in LangChain
-                )
-                return
-            except Exception as e:
-                # If loading fails, index will be rebuilt
-                pass
-
-        # Build new FAISS vector database
-        self.rebuild_vector_store()
+        """Loads existing FAISS index lazily via get_faiss_index()."""
+        return get_faiss_index()
 
     def rebuild_vector_store(self):
         """Rebuilds the vector store from official PDFs by invoking build_faiss_index."""
+        global _faiss_index
         try:
-            # Import build_faiss_index dynamically to avoid circular references
-            # and to leverage backend/ingest_sources.py
-            import sys
-            from pathlib import Path
             backend_path = Path(__file__).resolve().parent.parent.parent
             if str(backend_path) not in sys.path:
                 sys.path.append(str(backend_path))
                 
             from ingest_sources import build_faiss_index
-            self.vector_store = build_faiss_index()
+            _faiss_index = build_faiss_index()
+            return _faiss_index
         except Exception as e:
             import logging
             logging.error(f"Error rebuilding FAISS vector database: {e}")
@@ -107,7 +139,10 @@ class RAGAgent:
           - "sources": List of sources with page numbers and content snippet.
           - "low_confidence": Boolean indicating if query relevance is low.
         """
-        self.initialize_vector_store()
+        was_loaded_before = is_embeddings_loaded()
+        vector_store = get_faiss_index()
+        if not was_loaded_before and is_embeddings_loaded():
+            print(f"[MEM-CHECK] Post-first RAG call memory: {get_memory_usage_mb():.1f} MB")
         
         if not query or not query.strip():
             return {
@@ -116,7 +151,7 @@ class RAGAgent:
                 "low_confidence": True
             }
             
-        if not self.vector_store:
+        if not vector_store:
             return {
                 "context": "No RAG context database available.",
                 "sources": [],
@@ -125,7 +160,7 @@ class RAGAgent:
             
         try:
             # We use similarity_search_with_score to retrieve distance scores
-            docs_and_scores = self.vector_store.similarity_search_with_score(query, k=k)
+            docs_and_scores = vector_store.similarity_search_with_score(query, k=k)
             context_blocks = []
             sources = []
             
