@@ -224,6 +224,8 @@ async def run_ocr(file: UploadFile = File(...)):
 @app.post("/api/process-text", response_model=Dict[str, Any])
 async def process_text(payload: Dict[str, Any], db: Session = Depends(get_db)):
     """Processes raw or corrected OCR prescription text through the remaining coordinator pipeline agents."""
+    import time
+    start_time = time.time()
     global coordinator
     coordinator = get_or_create_coordinator()
     if not coordinator:
@@ -271,6 +273,7 @@ async def process_text(payload: Dict[str, Any], db: Session = Depends(get_db)):
         db.commit()
         
         print(f"[DEBUG-ISSUE-1] API Response returning reminders: {master_payload.get('reminders', [])}")
+        print(f"[BE-TIMING] /api/process-text total time: {time.time() - start_time:.2f}s")
         return master_payload
     except Exception as e:
         import traceback

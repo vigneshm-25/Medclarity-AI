@@ -707,14 +707,16 @@ def run_full_pipeline(text, target_lang, lang_iso):
                 "Falling back to offline medicine dictionary."
             )
 
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as e:
+            print(f"[FE-FALLBACK-TRIGGERED] Reason: {type(e).__name__}: {str(e)}")
             status.update(label="⏱️ Request timed out", state="error", expanded=True)
             st.error(
                 "The backend took too long to respond (>120 s). "
                 "Falling back to offline dictionary."
             )
 
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as e:
+            print(f"[FE-FALLBACK-TRIGGERED] Reason: {type(e).__name__}: {str(e)}")
             status.update(label="🔌 Cannot reach backend", state="error", expanded=True)
             st.error(
                 f"Cannot connect to `{BACKEND_URL}`. "
@@ -722,6 +724,7 @@ def run_full_pipeline(text, target_lang, lang_iso):
             )
 
         except Exception as exc:
+            print(f"[FE-FALLBACK-TRIGGERED] Reason: {type(exc).__name__}: {str(exc)}")
             err_str = str(exc)
             # ── Rate-limit: show countdown retry ──────────────────────────────
             if any(kw in err_str for kw in ("RESOURCE_EXHAUSTED", "quota", "429")):
@@ -790,6 +793,7 @@ def run_full_pipeline(text, target_lang, lang_iso):
                 )
 
     # ── Offline fallback (reached only when primary request failed) ──────────
+    print(f"[FE-FALLBACK-TRIGGERED] Triggering fallback_local_parse() for text: {text[:100]}...")
     st.info("🔄 Using offline medicine dictionary as fallback…")
     fallback = fallback_local_parse(text, target_lang=target_lang)
     # Commit all state BEFORE returning
