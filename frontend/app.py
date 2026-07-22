@@ -989,7 +989,11 @@ with st.sidebar:
                         res = requests.post(f"{BACKEND_URL}/api/ocr", files=files, timeout=60)
                         st.write("[CP6-frontend] raw json:", res.json())
                         if res.status_code == 200:
-                            res_json = res.json()
+                            result = res.json()
+                            print(f"[FE-CHECK] response keys: {list(result.keys())}")
+                            print(f"[FE-CHECK] type of raw_ocr: {type(result.get('raw_ocr'))}")
+                            print(f"[FE-CHECK] raw_ocr first 200 chars: {str(result.get('raw_ocr'))[:200]}")
+                            res_json = result
                             ocr_result_raw = (res_json.get("raw_ocr") or "").strip()
                             if not ocr_result_raw:
                                 ocr_result_raw = "[unclear] Unable to extract readable text from the prescription image."
