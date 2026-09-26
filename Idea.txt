@@ -1,0 +1,29 @@
+First login page should be displayed. After authentication by phone number or email ID the user should
+ select whether patient mode or caregiver mode. If they choose patient mode , 1.If that is their first 
+ time the middle page should contain informations to use our app then they should have choices of scanning,setting reminders
+option, if they press scan just scan the prescription ang give the results after analysing that , if they press set reminder 
+option give them both options setting reminders by scanning (through results of analysed prescription and then asking them to
+confirm or edit) and setting reminders manually through medicine name or their own wish like strip color whichever is possible
+for them to remember the medicine when the reminder asked them to eat medicine even though if they misplaced medicine in wrong
+covers. The reminder feature should work smartly it shouldn't disturb them and make them feel irritated, it should ask them in 
+a relaxed and happy way. Just add some dopamine increasing things like streaks or something so that they can have little 
+interest to take medicine properly. The time of the medicine like 1 pm or 2 pm or 3 pm in afternoon should be editable. The UI 
+should be available in both tamil and english and also the prescription analysed result.
+
+
+
+# 1. Activate virtual environment (Windows PowerShell)
+.\venv\Scripts\Activate.ps1
+
+# 2. Run the FastAPI server
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+http://127.0.0.1:8000
+
+
+# Navigate to app directory
+cd medclarity-app
+
+npx expo start --dev-client
+
+
+npx expo start --web

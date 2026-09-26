@@ -47,14 +47,51 @@ class SimplificationAgent:
 
     def simplify(self, extracted_details: str, safety_details: str) -> SimplifiedPrescription:
         """
-        Converts clinical structures into a warm, layman-simplified prescription guide using Groq.
+        Converts clinical structures into a warm, layman-simplified prescription guide using OpenAI.
         """
+        # [CP-EXP-1] Print exact structured_json received by explanation agent
+        print("[CP-EXP-1]")
+        print("Structured JSON received by explanation agent:")
+        print(extracted_details)
+
+        # Parse structured json to extract medicines array and individual medicine fields
+        try:
+            parsed = json.loads(extracted_details)
+            meds = parsed.get("medicines", [])
+            
+            # [CP-EXP-2] Print medicines array
+            print("[CP-EXP-2]")
+            print("Medicines array:")
+            print(json.dumps(meds, indent=2))
+
+            # [CP-EXP-3] Print fields for each medicine
+            print("[CP-EXP-3]")
+            for idx, m in enumerate(meds, start=1):
+                if isinstance(m, dict):
+                    print(f"Medicine #{idx}:")
+                    print(f"  name: {m.get('name') or m.get('medicine_name')}")
+                    print(f"  dosage: {m.get('dosage') or m.get('simple_dosage')}")
+                    print(f"  frequency: {m.get('frequency') or m.get('simple_timing')}")
+                    print(f"  duration: {m.get('duration') or m.get('simple_duration')}")
+        except Exception as err:
+            print(f"[CP-EXP-1] Error parsing extracted_details: {err}")
+
         schema_json = json.dumps(SimplifiedPrescription.model_json_schema())
         system_instructions = (
             f"{SYSTEM_PROMPT}\n\n"
             f"You must return a JSON object that adheres strictly to this JSON schema:\n{schema_json}"
         )
         
+        user_content = f"Simplify this extracted prescription details and safety alerts:\n\n{extracted_details}\n\nSafety Report:\n{safety_details}"
+
+        # [CP-EXP-4] Print complete prompt sent to LLM
+        print("[CP-EXP-4]")
+        print("Complete prompt sent to LLM:")
+        print("=== SYSTEM INSTRUCTIONS ===")
+        print(system_instructions)
+        print("=== USER CONTENT ===")
+        print(user_content)
+
         if not self.client:
             return SimplifiedPrescription(
                 patient_greeting="Hello!",
@@ -72,13 +109,18 @@ class SimplificationAgent:
                     reasoning_effort="low",
                     messages=[
                         {"role": "system", "content": system_instructions},
-                        {"role": "user", "content": f"Simplify this extracted prescription details and safety alerts:\n\n{extracted_details}\n\nSafety Report:\n{safety_details}"}
+                        {"role": "user", "content": user_content}
                     ],
                     response_format={"type": "json_object"}
                 )
                 elapsed_time = time.time() - start_time
                 content = response.choices[0].message.content
                 
+                # [CP-EXP-5] Print raw LLM response before parsing
+                print("[CP-EXP-5]")
+                print("Raw LLM response before any parsing:")
+                print(content)
+
                 if content.startswith("```json"):
                     content = content[7:]
                 if content.endswith("```"):

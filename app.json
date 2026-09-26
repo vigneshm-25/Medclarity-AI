@@ -1,0 +1,20 @@
+{
+  "plugins": [
+    "expo-audio"
+  ],
+  "extra": {
+    "eas": {
+      "projectId": "fd536bf0-b93c-415b-80ce-c62350b4ff4e"
+    }
+  },
+  "expo": {
+    "android": {
+      "package": "com.vignesh_v8.gramcareai"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "fd536bf0-b93c-415b-80ce-c62350b4ff4e"
+      }
+    }
+  }
+}

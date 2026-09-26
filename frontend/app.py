@@ -659,18 +659,6 @@ def run_full_pipeline(text, target_lang, lang_iso):
             status.write("🔊 Preparing voice audio guide…")
             status.write("✅ Saving reminders to database…")
 
-            # --- ADDED: Logging for debugging Analyse button action ---
-            import json
-            import streamlit.components.v1 as components
-            print(f"[FRONTEND LOG] Analyse button clicked! Sending request to: {BACKEND_URL}/api/process-text")
-            print(f"[FRONTEND LOG] Payload: {json.dumps(payload, indent=2)}")
-            components.html(
-                f"<script>console.log('Analyse triggered! Sending request to: {BACKEND_URL}/api/process-text', {json.dumps(payload)});</script>", 
-                height=0, 
-                width=0
-            )
-            # ---------------------------------------------------------
-
             response = requests.post(
                 f"{BACKEND_URL}/api/process-text",
                 json=payload,
@@ -679,7 +667,6 @@ def run_full_pipeline(text, target_lang, lang_iso):
 
             if response.status_code == 200:
                 result = response.json()
-                # ── Commit all state BEFORE returning ──
                 st.session_state.processed_data   = result
                 st.session_state.last_prescription = result
                 st.session_state.analysis_done     = True
@@ -707,103 +694,28 @@ def run_full_pipeline(text, target_lang, lang_iso):
                 "Falling back to offline medicine dictionary."
             )
 
-        except requests.exceptions.Timeout as e:
-            print(f"[FE-FALLBACK-TRIGGERED] Reason: {type(e).__name__}: {str(e)}")
-            status.update(label="⏱️ Request timed out", state="error", expanded=True)
-            st.error(
-                "The backend took too long to respond (>120 s). "
-                "Falling back to offline dictionary."
-            )
-
-        except requests.exceptions.ConnectionError as e:
-            print(f"[FE-FALLBACK-TRIGGERED] Reason: {type(e).__name__}: {str(e)}")
-            status.update(label="🔌 Cannot reach backend", state="error", expanded=True)
-            st.error(
-                f"Cannot connect to `{BACKEND_URL}`. "
-                "Is the FastAPI server running? Falling back to offline dictionary."
-            )
-
         except Exception as exc:
-            print(f"[FE-FALLBACK-TRIGGERED] Reason: {type(exc).__name__}: {str(exc)}")
-            err_str = str(exc)
-            # ── Rate-limit: show countdown retry ──────────────────────────────
-            if any(kw in err_str for kw in ("RESOURCE_EXHAUSTED", "quota", "429")):
-                status.update(
-                    label="⏳ API rate limit hit – retrying in 30 s…",
-                    state="running",
-                    expanded=True
-                )
-                status.write("⏳ Rate limit reached. Retrying automatically…")
-                progress_bar = st.progress(0)
-                for i in range(30):
-                    time.sleep(1)
-                    remaining = 30 - i - 1
-                    progress_bar.progress(
-                        (i + 1) / 30,
-                        text=f"Rate limit hit — retrying in {remaining} s…"
-                    )
-                progress_bar.empty()
-
-                # Single retry after countdown
-                try:
-                    retry_resp = requests.post(
-                        f"{BACKEND_URL}/api/process-text",
-                        json=payload,
-                        timeout=120
-                    )
-                    if retry_resp.status_code == 200:
-                        result = retry_resp.json()
-                        st.session_state.processed_data   = result
-                        st.session_state.last_prescription = result
-                        st.session_state.analysis_done     = True
-                        st.session_state.step              = 2
-                        status.update(
-                            label="✅ Retry succeeded! Scroll down to see results.",
-                            state="complete",
-                            expanded=False
-                        )
-                        return result
-                    else:
-                        status.update(
-                            label="❌ Retry also failed – using offline fallback",
-                            state="error",
-                            expanded=True
-                        )
-                        st.error(
-                            f"Retry returned HTTP {retry_resp.status_code}. "
-                            "Using offline medicine dictionary."
-                        )
-                except Exception as retry_exc:
-                    status.update(
-                        label="❌ Retry failed – using offline fallback",
-                        state="error",
-                        expanded=True
-                    )
-                    st.error(f"Retry failed: {retry_exc}. Using offline fallback.")
-            else:
-                # Any other unexpected exception
-                status.update(
-                    label=f"❌ Unexpected error",
-                    state="error",
-                    expanded=True
-                )
-                st.error(
-                    f"**Unexpected error during analysis:** {err_str}\n\n"
-                    "Using offline medicine dictionary."
-                )
+            # Any other unexpected exception
+            status.update(
+                label=f"❌ Unexpected error",
+                state="error",
+                expanded=True
+            )
+            st.error(
+                f"**Unexpected error during analysis:** {str(exc)}\n\n"
+                "Using offline medicine dictionary."
+            )
 
     # ── Offline fallback (reached only when primary request failed) ──────────
-    print(f"[FE-FALLBACK-TRIGGERED] Triggering fallback_local_parse() for text: {text[:100]}...")
     st.info("🔄 Using offline medicine dictionary as fallback…")
     fallback = fallback_local_parse(text, target_lang=target_lang)
-    # Commit all state BEFORE returning
     st.session_state.processed_data   = fallback
     st.session_state.last_prescription = fallback
     st.session_state.analysis_done     = True
     st.session_state.step              = 2
     return fallback
 
-# Set Page Config for Modern Premium Interface
+# Set Page Config for Accessible, High-Contrast Modern Interface
 st.set_page_config(
     page_title="MedClarity AI - Multilingual Health Assistant",
     page_icon="🩺",
@@ -811,124 +723,253 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- IMPROVEMENT: GLOBAL CSS FOR RURAL USERS (MINIMUM 16PX FONT SIZE, EMOJIS, AND PREMIUM DESIGN) ---
-# Inject custom CSS to increase font sizes globally, adjust card layouts, and enable vibrant theme gradients.
+# Logo Path Resolution
+LOGO_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Medclarity logo.png"))
+if not os.path.exists(LOGO_PATH):
+    LOGO_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "Medclarity logo.png"))
+
+# --- IMPROVEMENT: GLOBAL TEAL/SEAFOAM CUSTOM THEME WITH HIGH-CONTRAST ACCESSIBLE TYPOGRAPHY ---
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
     
-    /* Global scaling for rural readability */
+    :root {
+        --primary-teal: #2A9D8F;
+        --primary-dark: #1D7068;
+        --seafoam-light: #E8F6F4;
+        --bg-warm-neutral: #FAF9F6;
+        --text-dark: #0F172A;
+        --text-muted: #475569;
+        --card-bg: #FFFFFF;
+        --card-border: #E2E8F0;
+        --warning-amber-bg: #FFFBEB;
+        --warning-amber-text: #92400E;
+        --warning-amber-border: #F59E0B;
+        --danger-red-bg: #FEF2F2;
+        --danger-red-text: #991B1B;
+        --danger-red-border: #EF4444;
+        --success-green-bg: #F0FDF4;
+        --success-green-border: #10B981;
+    }
+
+    /* Global scaling & font hierarchy for low-literacy and elderly readability (Min 16px, prescription 18-20px) */
     html, body, [class*="css"], p, span, li, table, div {
-        font-family: 'Outfit', sans-serif;
-        font-size: 18px !important; /* Minimum 16px font requirement satisfied */
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 17px !important;
+        color: var(--text-dark);
+        line-height: 1.6;
     }
-    
+
     .stApp {
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
-        color: #c9d1d9;
+        background-color: var(--bg-warm-neutral);
     }
-    
+
+    .main .block-container {
+        padding-top: 1.2rem !important;
+        padding-bottom: 3rem !important;
+        max-width: 1200px;
+    }
+
+    /* High Contrast Titles & Subtitles */
     .main-title {
-        font-size: 3.2rem !important;
-        font-weight: 700;
-        background: linear-gradient(90deg, #58a6ff 0%, #bc8cff 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 5px;
+        font-size: 2.6rem !important;
+        font-weight: 800;
+        color: #1D7068;
+        letter-spacing: -0.5px;
+        margin-bottom: 2px;
     }
     
     .subtitle {
-        font-size: 1.3rem;
-        color: #8b949e;
-        margin-bottom: 25px;
+        font-size: 1.15rem;
+        color: var(--text-muted);
+        font-weight: 500;
+        margin-bottom: 12px;
     }
-    
-    /* Card borders color-coded dynamically */
-    .card-green {
-        background-color: rgba(22, 27, 34, 0.85);
-        border: 2px solid #2ea043;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
+
+    /* Prescription Text Area High Readability (18px-20px) */
+    textarea {
+        font-family: 'Plus Jakarta Sans', monospace !important;
+        font-size: 19px !important;
+        line-height: 1.7 !important;
+        color: #0F172A !important;
+        background-color: #FFFFFF !important;
+        border: 2px solid #CBD5E1 !important;
+        border-radius: 12px !important;
+        padding: 14px !important;
     }
-    .card-yellow {
-        background-color: rgba(22, 27, 34, 0.85);
-        border: 2px solid #d29922;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
+    textarea:focus {
+        border-color: var(--primary-teal) !important;
+        box-shadow: 0 0 0 3px rgba(42, 157, 143, 0.2) !important;
     }
-    .card-red {
-        background-color: rgba(22, 27, 34, 0.85);
-        border: 2px solid #f85149;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
-    }
-    
+
+    /* Rounded Cards / Containers with Subtle Shadows */
     .card-general {
-        background-color: rgba(22, 27, 34, 0.75);
-        border: 1px solid rgba(48, 54, 61, 0.8);
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
+        background-color: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-left: 6px solid var(--primary-teal);
+        border-radius: 16px;
+        padding: 22px 24px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 14px rgba(42, 157, 143, 0.06);
     }
-    
-    .danger-advisory {
-        background: rgba(248, 81, 73, 0.1);
-        border: 2px solid #f85149;
-        border-radius: 12px;
-        padding: 20px;
-        color: #ff7b72;
-        margin-bottom: 25px;
+
+    .card-green {
+        background-color: var(--success-green-bg);
+        border: 1px solid var(--success-green-border);
+        border-left: 6px solid #10B981;
+        border-radius: 16px;
+        padding: 22px 24px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.08);
     }
-    
-    .badge {
-        padding: 6px 12px;
+
+    .card-yellow {
+        background-color: var(--warning-amber-bg);
+        border: 1px solid var(--warning-amber-border);
+        border-left: 6px solid #F59E0B;
+        border-radius: 16px;
+        padding: 22px 24px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 12px rgba(245, 158, 11, 0.08);
+    }
+
+    .card-red {
+        background-color: var(--danger-red-bg);
+        border: 1px solid var(--danger-red-border);
+        border-left: 6px solid #EF4444;
+        border-radius: 16px;
+        padding: 22px 24px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 12px rgba(239, 68, 68, 0.08);
+    }
+
+    /* High Visibility Badges for Amber [unclear] Flags */
+    .badge-unclear {
+        background-color: #FEF3C7;
+        color: #92400E;
+        border: 1.5px solid #F59E0B;
         border-radius: 20px;
-        font-size: 0.95rem !important;
-        font-weight: 600;
-        display: inline-block;
+        padding: 3px 10px;
+        font-size: 0.88rem !important;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
     }
-    .badge-safety-warning {
-        background-color: rgba(210, 153, 34, 0.15);
-        color: #d29922;
-        border: 1px solid rgba(210, 153, 34, 0.3);
+
+    .badge-source {
+        font-size: 0.85rem !important;
+        color: #64748B;
+        font-weight: 500;
+        margin-top: 14px;
+        border-top: 1px solid #E2E8F0;
+        padding-top: 8px;
     }
+
+    .persistent-bar {
+        background: #FFFFFF;
+        border: 1px solid #CBD5E1;
+        border-radius: 14px;
+        padding: 12px 18px;
+        margin-bottom: 22px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+    }
+
     .warning-card {
-        background-color: rgba(210, 153, 34, 0.1);
-        border: 1px solid #d29922;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
-        color: #d29922;
+        background-color: #FFFBEB;
+        border: 2px solid #F59E0B;
+        border-radius: 14px;
+        padding: 18px 22px;
+        margin-bottom: 22px;
+        color: #92400E;
         display: flex;
         align-items: center;
         gap: 15px;
     }
+
+    /* Streamlit Buttons Styling */
+    .stButton > button {
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        font-size: 1rem !important;
+        padding: 0.55rem 1.2rem !important;
+        transition: all 0.2s ease !important;
+    }
+
+    .stButton > button[kind="primary"] {
+        background-color: var(--primary-teal) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background-color: var(--primary-dark) !important;
+        box-shadow: 0 4px 12px rgba(42, 157, 143, 0.3) !important;
+    }
+
+    /* Sidebar Clean Styling */
+    [data-testid="stSidebar"] {
+        background-color: #FFFFFF !important;
+        border-right: 1px solid #E2E8F0 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# App Navigation Header
-col_title, col_logo = st.columns([6, 1])
-with col_title:
-    st.markdown('<div class="main-title">MedClarity AI 🩺</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">Multilingual AI Health Assistant for Rural India — Breaking Prescription Barriers</div>', unsafe_allow_html=True)
-    
-    # Get active language choice for disclaimers
-    active_lang = st.session_state.get("selected_language", "English")
-    trans = DISCLAIMER_TRANSLATIONS.get(active_lang, DISCLAIMER_TRANSLATIONS["English"])
-    
-    # Trust badge popover next to title
-    with st.popover(trans["title_badge"]):
-        st.info(trans["popover_desc"])
+# Helper function to render a medicine card with high-contrast font, WHO/NLEM citation, and [unclear] amber badge
+def render_medicine_card(med: dict, lang_key: str = "English", is_regional: bool = False):
+    raw_name = str(med.get("name", "Medicine"))
+    raw_dosage = str(med.get("simple_dosage", ""))
+    raw_timing = str(med.get("simple_timing", ""))
+    raw_purpose = str(med.get("simple_purpose", ""))
+    raw_duration = str(med.get("simple_duration", ""))
 
-# --- IMPROVEMENT: DYNAMIC STATE INITIALIZATIONS ---
+    # Detect [unclear] tags across any medicine field
+    has_unclear = any("[unclear]" in val.lower() for val in [raw_name, raw_dosage, raw_timing, raw_purpose, raw_duration])
+
+    # Card background color-coding
+    timing_lower = raw_timing.lower()
+    name_lower = raw_name.lower()
+    card_class = "card-green"
+
+    if any(x in timing_lower for x in ["food", "eating", "meals", "சாப்பாடு", "உணவு", "भोजन", "खाना", "తిండి", "ಊட்ட", "ഭക്ഷണം", "খাবার", "जेवण"]):
+        card_class = "card-yellow"
+    if any(x in name_lower for x in ["alprazolam", "clonazepam", "digoxin"]) or "warning" in timing_lower or "danger" in timing_lower:
+        card_class = "card-red"
+    if has_unclear:
+        card_class = "card-yellow"
+
+    # Replace [unclear] inline text with distinct amber badges
+    name_disp = raw_name.replace("[unclear]", '<span class="badge-unclear">⚠️ [unclear]</span>').replace("[UNCLEAR]", '<span class="badge-unclear">⚠️ [unclear]</span>')
+    dosage_disp = raw_dosage.replace("[unclear]", '<span class="badge-unclear">⚠️ [unclear]</span>').replace("[UNCLEAR]", '<span class="badge-unclear">⚠️ [unclear]</span>')
+    timing_disp = raw_timing.replace("[unclear]", '<span class="badge-unclear">⚠️ [unclear]</span>').replace("[UNCLEAR]", '<span class="badge-unclear">⚠️ [unclear]</span>')
+    purpose_disp = raw_purpose.replace("[unclear]", '<span class="badge-unclear">⚠️ [unclear]</span>').replace("[UNCLEAR]", '<span class="badge-unclear">⚠️ [unclear]</span>')
+    duration_disp = raw_duration.replace("[unclear]", '<span class="badge-unclear">⚠️ [unclear]</span>').replace("[UNCLEAR]", '<span class="badge-unclear">⚠️ [unclear]</span>')
+
+    unclear_badge_header = '<div style="margin-bottom:10px;"><span class="badge-unclear">⚠️ [unclear] Needs Doctor/Pharmacist Verification</span></div>' if has_unclear else ''
+
+    dosage_label = t('dosage', lang_key) if is_regional else "How much to take"
+    timing_label = t('alarm_time', lang_key) if is_regional else "When to take"
+    purpose_label = "Purpose" if is_regional else "Why you take it"
+    duration_label = t('duration', lang_key) if is_regional else "How long"
+
+    html_content = f"""
+    <div class="{card_class}">
+        {unclear_badge_header}
+        <h4 style="margin-top:0px; font-size:1.35rem; font-weight:700; color:#1D7068;">💊 {name_disp}</h4>
+        <p style="margin:6px 0; font-size:1.05rem;">📏 <strong>{dosage_label}:</strong> {dosage_disp}</p>
+        <p style="margin:6px 0; font-size:1.05rem;">🕒 <strong>{timing_label}:</strong> {timing_disp}</p>
+        <p style="margin:6px 0; font-size:1.05rem;">🎯 <strong>{purpose_label}:</strong> {purpose_disp}</p>
+        <p style="margin:6px 0; font-size:1.05rem;">⏳ <strong>{duration_label}:</strong> {duration_disp}</p>
+        <div class="badge-source">📚 Source: WHO Model List of Essential Medicines (23rd List, 2023) / India NLEM (2022)</div>
+    </div>
+    """
+    st.markdown(html_content, unsafe_allow_html=True)
+
+
+# Dynamic Session State Initializations
 if "step" not in st.session_state:
     st.session_state.step = 0
 if "raw_ocr" not in st.session_state:
     st.session_state.raw_ocr = ""
-# CHANGED: Initialize unified prescription text and auto_analyse flag
 if "prescription_text" not in st.session_state:
     st.session_state.prescription_text = ""
 if "ocr_text" not in st.session_state:
@@ -939,79 +980,110 @@ if "processed_data" not in st.session_state:
     st.session_state.processed_data = None
 if "last_prescription" not in st.session_state:
     st.session_state.last_prescription = None
-# analysis_done flag: hides the Analyse button and shows results after pipeline
 if "analysis_done" not in st.session_state:
     st.session_state.analysis_done = False
+if "selected_language" not in st.session_state:
+    st.session_state.selected_language = "English"
 
-# --- IMPROVEMENT: SIDEBAR ORGANIZED INTO SECTIONS ---
-with st.sidebar:
-    # Use session state to get the language before the selectbox is rendered
-    current_lang = st.session_state.get("selected_language", "English")
-    
-    st.image("https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=300&auto=format&fit=crop", caption=t("GramCare", current_lang), width="stretch") # use_column_width=True replaced immediately with width="stretch"
-    
-    # ⚙️ Settings Section
-    st.markdown(f"### {t('settings', current_lang)}")
+current_lang = st.session_state.get("selected_language", "English")
+
+# App Navigation Header with App Logo
+col_logo, col_title = st.columns([1, 5])
+with col_logo:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, use_container_width=True)
+    else:
+        st.markdown("<div style='font-size: 3.5rem;'>🩺</div>", unsafe_allow_html=True)
+with col_title:
+    st.markdown('<div class="main-title">MedClarity AI 🩺</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">Multilingual AI Health Assistant for Rural India — Breaking Prescription Barriers</div>', unsafe_allow_html=True)
+
+    active_lang = current_lang
+    trans = DISCLAIMER_TRANSLATIONS.get(active_lang, DISCLAIMER_TRANSLATIONS["English"])
+    with st.popover(trans["title_badge"]):
+        st.info(trans["popover_desc"])
+
+# Persistent Control & Navigation Bar (🌐 Language Selector & Text Verification Button)
+st.markdown('<div class="persistent-bar">', unsafe_allow_html=True)
+p_col1, p_col2, p_col3 = st.columns([3, 3, 2])
+
+with p_col1:
     target_lang = st.selectbox(
-        t("select_language", current_lang),
+        "🌐 " + t("select_language", current_lang),
         ["English", "Tamil", "Hindi", "Telugu", "Kannada", "Malayalam", "Bengali", "Marathi"],
-        key="selected_language"
+        key="selected_language",
+        label_visibility="visible"
     )
-    
-    # Map friendly language name to ISO code for gTTS audio streaming
-    LANG_ISO_MAP = {
-        "English": "en",
-        "Tamil": "ta",
-        "Hindi": "hi",
-        "Telugu": "te",
-        "Kannada": "kn",
-        "Malayalam": "ml",
-        "Bengali": "bn",
-        "Marathi": "mr"
-    }
-    lang_iso = LANG_ISO_MAP[target_lang]
-    
+
+LANG_ISO_MAP = {
+    "English": "en", "Tamil": "ta", "Hindi": "hi", "Telugu": "te",
+    "Kannada": "kn", "Malayalam": "ml", "Bengali": "bn", "Marathi": "mr"
+}
+lang_iso = LANG_ISO_MAP[target_lang]
+
+with p_col2:
+    if st.session_state.get("step", 0) > 0:
+        if st.button("📝 Verify & Edit Prescription Text", use_container_width=True, key="persistent_edit_text_btn"):
+            st.session_state.step = 1
+            st.session_state.analysis_done = False
+            rerun_app()
+
+with p_col3:
+    if st.session_state.get("step", 0) == 2:
+        if st.button("🔄 Analyze Another", use_container_width=True, key="persistent_reset_btn"):
+            st.session_state.step = 0
+            st.session_state.processed_data = None
+            st.session_state.raw_ocr = ""
+            st.session_state.prescription_text = ""
+            st.session_state.analysis_done = False
+            st.session_state.last_uploaded_file_key = None
+            rerun_app()
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+# --- SIDEBAR ORGANIZED INTO ACCESSIBLE SECTIONS ---
+with st.sidebar:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, caption=t("GramCare", current_lang), use_container_width=True)
+
+    st.markdown(f"### 🌐 {t('settings', current_lang)}")
+    st.info(f"Target Language: **{target_lang}**")
     st.markdown("---")
-    
+
     # 📤 Upload Section
-    st.markdown("### 📤 Upload")
+    st.markdown("### 📤 Upload Prescription")
     uploaded_file = st.file_uploader(
-        "Upload Prescription Image", 
-        type=["png", "jpg", "jpeg", "webp"], 
+        "Upload Prescription Image",
+        type=["png", "jpg", "jpeg", "webp"],
         help="Supports JPEG/PNG/WEBP files of doctor prescriptions or medical reports."
     )
-    
-    # CHANGED: Auto-run OCR when an image is uploaded and store in unified `prescription_text`
+
     if uploaded_file is not None:
         file_key = f"processed_{uploaded_file.name}_{uploaded_file.size}"
         if st.session_state.get("last_uploaded_file_key") != file_key:
-            if st.button(t("extract_ocr", target_lang), width="stretch"):
-                with st.spinner("🤖 Agent 1: Reading prescription image (Vision OCR)..."):
+            if st.button(t("extract_ocr", target_lang), use_container_width=True):
+                with st.status("🤖 Agent 1: Reading prescription image (Vision OCR)...", expanded=True) as ocr_status:
+                    ocr_status.write("📷 Uploading image to Vision Engine...")
+                    ocr_status.write("🔍 Extracting medical text & dosage notes...")
                     try:
                         import json
                         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
                         res = requests.post(f"{BACKEND_URL}/api/ocr", files=files, timeout=60)
-                        st.write("[CP6-frontend] raw json:", res.json())
                         if res.status_code == 200:
                             result = res.json()
-                            print(f"[FE-CHECK] response keys: {list(result.keys())}")
-                            print(f"[FE-CHECK] type of raw_ocr: {type(result.get('raw_ocr'))}")
-                            print(f"[FE-CHECK] raw_ocr first 200 chars: {str(result.get('raw_ocr'))[:200]}")
                             res_json = result
                             ocr_result_raw = (res_json.get("raw_ocr") or "").strip()
                             if not ocr_result_raw:
                                 ocr_result_raw = "[unclear] Unable to extract readable text from the prescription image."
 
-                            # Try to parse the new JSON structured raw_ocr
                             parsed_text = ocr_result_raw
                             try:
                                 parsed_json = json.loads(ocr_result_raw)
                                 if isinstance(parsed_json, dict) and "raw_transcription" in parsed_json:
                                     parsed_text = parsed_json.get("raw_transcription") or "[unclear] Empty transcription"
                             except Exception:
-                                pass # Fall back to the raw string if parsing fails
-                                
-                            print(f"[CP-FRONTEND-OCR-PARSED] displaying: {parsed_text[:100]}...")
+                                pass
 
                             st.session_state.raw_ocr = ocr_result_raw
                             st.session_state.prescription_text = parsed_text
@@ -1019,8 +1091,9 @@ with st.sidebar:
                             st.session_state.step = 1
                             st.session_state.analysis_done = False
                             st.session_state.last_uploaded_file_key = file_key
+                            ocr_status.update(label="✅ Prescription text read successfully!", state="complete", expanded=False)
                             if res_json.get("ocr_fallback"):
-                                st.warning("⚠️ Gemini quota reached — using local OCR. Accuracy may vary for handwritten text.")
+                                st.warning("⚠️ Gemini quota reached — using local OCR fallback.")
                             else:
                                 st.success("Prescription text read successfully! Please verify it below.")
                             rerun_app()
@@ -1030,6 +1103,7 @@ with st.sidebar:
                                 error_detail = res.json().get("error", res.text[:300])
                             except Exception:
                                 error_detail = res.text[:300]
+                            ocr_status.update(label=f"❌ OCR API Error (HTTP {res.status_code})", state="error", expanded=True)
                             st.error(f"❌ **OCR API Error (HTTP {res.status_code}):** {error_detail}")
                             st.warning("Using offline medicine parser fallback.")
                             fallback_text = ""
@@ -1039,6 +1113,7 @@ with st.sidebar:
                             st.session_state.last_uploaded_file_key = file_key
                             rerun_app()
                     except Exception as e:
+                        ocr_status.update(label="❌ Connection Error", state="error", expanded=True)
                         st.error(f"❌ **Connection Error:** {str(e)}")
                         st.warning("Vision API offline. Using local parser fallback.")
                         fallback_text = ""
@@ -1048,16 +1123,13 @@ with st.sidebar:
                         st.session_state.last_uploaded_file_key = file_key
                         rerun_app()
 
-        # --- IMPROVEMENT: PRIVACY - Delete uploaded image from memory ---
         uploaded_file = None
 
     st.markdown("---")
-    
+
     # 📋 Quick Actions Section
     st.markdown("### 📋 Quick Actions")
-    
-    # CHANGED: Sample prescription auto-triggers full analysis
-    if st.button(t("try_sample", target_lang), width="stretch"):
+    if st.button(t("try_sample", target_lang), use_container_width=True):
         st.session_state.raw_ocr = (
             "Dr. Anjali Sharma, MD | Patient: Vignesh Kumar (Age: 52) | Date: 26/05/2026 | "
             "Symptoms: Dry cough, high fever, throat pain. | "
@@ -1070,29 +1142,28 @@ with st.sidebar:
         st.session_state.analysis_done = False
         st.success("Sample prescription loaded and will be analysed automatically.")
         rerun_app()
-        
-    # Quick action: Load Last processed cache
-    if st.button(t("view_last", target_lang), width="stretch"):
+
+    if st.button(t("view_last", target_lang), use_container_width=True):
         if st.session_state.last_prescription:
             st.session_state.processed_data = st.session_state.last_prescription
             st.session_state.step = 2
             st.success("Loaded last processed prescription from offline cache!")
         else:
             st.info("No prescription cached in this session yet.")
-            
+
     st.markdown("---")
-    
+
     # 🗄️ Reminders Section (SQLite)
     st.markdown("### 🗄️ Reminders")
-    if st.button(t("refresh_db", target_lang), width="stretch"):
+    if st.button(t("refresh_db", target_lang), use_container_width=True):
         rerun_app()
-        
+
     try:
         res = requests.get(f"{BACKEND_URL}/api/reminders")
         if res.status_code == 200:
             db_reminders = res.json()
             if db_reminders:
-                for reminder in db_reminders[:5]: # Show first 5 reminders to keep sidebar clean
+                for reminder in db_reminders[:5]:
                     st.markdown(f"""
                     **{reminder['medicine_name']}** ({reminder.get('dosage', 'N/A')})  
                     🕒 `Time: {reminder['time_of_day']}` | {reminder.get('relation_to_food', '')}  
@@ -1107,21 +1178,22 @@ with st.sidebar:
             st.error("Error connecting to database reminders.")
     except Exception:
         st.warning("Database offline.")
-        
+
     st.markdown("---")
-    
+
     # ℹ️ About Section
     st.markdown("### ℹ️ About")
     st.info("MedClarity AI helps rural citizens understand English prescriptions in local languages.")
 
-# --- IMPROVEMENT: PRIVACY - PERMANENT DISCLAIMER BANNER ---
+
+# PERMANENT MEDICAL DISCLAIMER BANNER
 st.markdown("""
-<div style="background-color: rgba(248, 81, 73, 0.15); border: 2px solid #f85149; border-radius: 8px; padding: 10px; margin-bottom: 20px; text-align: center; color: #ff7b72; font-weight: bold;">
+<div style="background-color: #FEF2F2; border: 2px solid #EF4444; border-radius: 12px; padding: 12px 18px; margin-bottom: 22px; text-align: center; color: #991B1B; font-weight: 700;">
     🚨 Medical Disclaimer: This is for understanding only. Always follow your doctor's advice. Do not make medical decisions based on this assistant.
 </div>
 """, unsafe_allow_html=True)
 
-# --- IMPROVEMENT: FIRST TIME HERE? EXPANDER ---
+# FIRST TIME HERE? INSTRUCTIONS EXPANDER
 with st.expander(f"❓ {t('first_time', current_lang)} ({t('instructions', current_lang)})", expanded=False):
     st.markdown("""
     ### English Instructions:
@@ -1141,27 +1213,28 @@ with st.expander(f"❓ {t('first_time', current_lang)} ({t('instructions', curre
     6. **குரல் கேள்வி**: பக்கத்தின் கீழே உங்கள் குரல் மூலம் ஏதேனும் சந்தேகங்களைக் கேட்கலாம்!
     """)
 
-# MAIN PANEL
+
+# MAIN PANEL STEP ROUTING
 if st.session_state.step == 0:
     st.markdown("""
     <div class="card-general">
-        <h3>💡 Welcome to MedClarity AI</h3>
-        <p>Please upload a prescription image on the left side or try the sample data to get started.</p>
+        <h3 style="color:#1D7068; margin-top:0;">💡 Welcome to MedClarity AI</h3>
+        <p style="font-size:1.1rem;">Please upload a prescription image in the sidebar or click <strong>⚡ Try Sample Prescription</strong> to get started.</p>
     </div>
     """, unsafe_allow_html=True)
 
-# CHANGED: Auto-trigger analysis if `auto_analyse` flag set (e.g., sample prescription)
 if st.session_state.get("auto_analyse") and st.session_state.prescription_text:
     st.session_state.auto_analyse = False
-    # run_full_pipeline writes all state (processed_data, step, analysis_done) internally
     run_full_pipeline(st.session_state.prescription_text, target_lang, lang_iso)
-    # Single rerun AFTER all state is committed
     rerun_app()
 
-# CHANGED: Single-step verification + single primary Analyse button that runs full pipeline
 elif st.session_state.step == 1 and not st.session_state.get("analysis_done"):
-    st.markdown("### 📝 Verify and Correct Prescription Text")
-    st.info("Sometimes AI can misread handwritten prescriptions. Please check the text below and correct any errors before processing.")
+    st.markdown("""
+    <div class="card-general">
+        <h3 style="color:#1D7068; margin-top:0;">📝 Verify and Correct Prescription Text</h3>
+        <p style="color:#475569; font-size:1.05rem;">Sometimes AI can misread handwritten prescriptions. Please check the text below and correct any errors before processing.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     response_data = st.session_state.get("raw_ocr", "")
     parsed_text = response_data
@@ -1172,13 +1245,8 @@ elif st.session_state.step == 1 and not st.session_state.get("analysis_done"):
             parsed_text = parsed_json.get("raw_transcription", response_data)
     except Exception:
         pass
-    
+
     value_used_for_display = parsed_text if parsed_text else st.session_state.get("ocr_text", "")
-    
-    print(f"[CP-FRONTEND-OCR] raw response received: {response_data}")
-    print(f"[CP-FRONTEND-OCR-PARSED] displaying: {parsed_text[:100]}...")
-    print(f"[CP-FRONTEND-OCR] field being rendered in text box: {value_used_for_display}")
-    print(f"[CP-FRONTEND-OCR] type: {type(value_used_for_display)}")
 
     with st.form("verify_prescription_form"):
         corrected_text = st.text_area(
@@ -1187,21 +1255,17 @@ elif st.session_state.step == 1 and not st.session_state.get("analysis_done"):
             height=220,
             key="corrected_prescription"
         )
-        # Single primary Analyse button – hidden once analysis_done is True
         submitted = st.form_submit_button(t("analyse_prescription", target_lang), type="primary", use_container_width=True)
-        
+
         if submitted:
             st.session_state.prescription_text = corrected_text
-            # run_full_pipeline writes all state (processed_data, step=2, analysis_done=True)
             run_full_pipeline(st.session_state.prescription_text, target_lang, lang_iso)
-            # Single rerun AFTER all state is committed – never called inside the function
             rerun_app()
 
 elif st.session_state.step == 2:
     data = st.session_state.processed_data
-    
-    # Reset button – also clears the analysis_done flag so the Analyse button reappears next time
-    if st.button(t("analyze_another", target_lang), width="stretch"):
+
+    if st.button(t("analyze_another", target_lang), use_container_width=True):
         st.session_state.step = 0
         st.session_state.processed_data = None
         st.session_state.raw_ocr = ""
@@ -1209,69 +1273,64 @@ elif st.session_state.step == 2:
         st.session_state.analysis_done = False
         st.session_state.last_uploaded_file_key = None
         rerun_app()
-        
+
     if data:
-        # --- NEW FEATURE: PRESCRIPTION SUMMARY CARD ---
-        # Displays key metadata elements at the very top of the results.
+        # PRESCRIPTION SUMMARY CARD (PATIENT INFO)
         patient_name = data.get("patient_name", "Unknown Patient")
         doctor_name = data.get("doctor_name", "Unknown Doctor")
         date_val = data.get("date", "Not Available")
         symptoms = data.get("symptoms", [])
         medicines = data.get("simplified_en", {}).get("medicines", [])
-        
+
         st.markdown(f"""
-        <div class="card-general" style="border-left: 6px solid #bc8cff; margin-bottom: 25px;">
-            <h3 style="margin-top:0px; color:#58a6ff;">📋 Prescription Summary Card</h3>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+        <div class="card-general">
+            <h3 style="margin-top:0px; color:#1D7068;">📋 Patient & Prescription Info</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; font-size:1.05rem;">
                 <div>👤 <strong>Patient Name:</strong> {patient_name}</div>
                 <div>🩺 <strong>Doctor:</strong> {doctor_name}</div>
                 <div>📅 <strong>Date:</strong> {date_val}</div>
                 <div>💊 <strong>Medicines Count:</strong> {len(medicines)}</div>
             </div>
-            <div style="margin-top:10px;">
-                🩺 <strong>Identified Symptoms:</strong> {"".join([f'<span class="badge badge-safety-warning" style="margin-right:5px;">{s}</span>' for s in symptoms]) if symptoms else 'General Symptoms'}
+            <div style="margin-top:12px; font-size:1.05rem;">
+                🩺 <strong>Identified Symptoms:</strong> {"".join([f'<span class="badge-unclear" style="margin-right:6px;">{s}</span>' for s in symptoms]) if symptoms else 'General Symptoms'}
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # --- NEW FEATURE: SUGGESTED REFERENCE DRUG MATCHES ---
+
+        # SUGGESTED REFERENCE DRUG MATCHES
         suggestions = data.get("drug_suggestions", [])
         if suggestions:
             st.markdown("### 🩺 Suggested Drug Name Matches")
             st.info("The OCR extracted some medicine names that are close matches to official essential medicines (WHO EML / NLEM 2022). Please verify the correct name:")
             for sug in suggestions:
                 st.warning(f"🔍 OCR read: **`{sug['ocr_text']}`** ➔ Reference drug: **`{sug['suggested_match']}`** (Match Confidence: {int(sug['match_confidence']*100)}%)")
-        
-        # --- IMPROVEMENT: DYNAMIC DRUG-TO-DRUG INTERACTION ALERT ---
-        # Scans the prescription list for harmful interactions and highlights them in a red banner.
+
+        # DYNAMIC DRUG-TO-DRUG INTERACTION ALERT
         interaction_warnings = check_drug_interactions(medicines)
         if interaction_warnings:
             for warn in interaction_warnings:
                 st.error(warn)
 
-        # ── TRUST UI: Low-confidence amber warning card ───────────────────────────
-        # Shown when OCR fell back to Tesseract, text had [UNREADABLE] segments,
-        # or RAG retrieval scored poorly. Uses warm amber — NOT alarming red.
-        active_lang = st.session_state.get("selected_language", "English")
+        # TRUST UI: Low-confidence amber warning card
+        active_lang = current_lang
         trans = DISCLAIMER_TRANSLATIONS.get(active_lang, DISCLAIMER_TRANSLATIONS["English"])
         rag_sources = data.get("rag_sources", [])
 
         if data.get("low_confidence", False):
             st.markdown(f"""
             <div class="warning-card">
-                <span style="font-size:1.6rem;">⚠️</span>
-                <span style="font-size:1.05rem;">{trans['low_confidence_msg']}</span>
+                <span style="font-size:1.8rem;">⚠️</span>
+                <span style="font-size:1.05rem; font-weight:600;">{trans['low_confidence_msg']}</span>
             </div>
             """, unsafe_allow_html=True)
 
-        # Medicine Safety Advisory (Issue 2)
+        # Medicine Safety Advisory Section
         precautions = data.get("precautions_en", [])
         advisory_en = data.get("patient_advisory_en", "")
         emergency = data.get("emergency_alert", False)
-        
-        # Only display if there's actual advisory or precautions
+
         if advisory_en or precautions:
-            st.markdown("### ⚠️ Medicine Safety Notes")
+            st.markdown("### ⚠️ Safety Warnings & Precautions")
             if advisory_en:
                 if emergency:
                     st.error(f"**Critical Interaction Alert:** {advisory_en}")
@@ -1281,53 +1340,42 @@ elif st.session_state.step == 2:
                 for p in precautions:
                     st.warning(f"• {p}")
 
-        # CHANGED: Regional language tab shown first for rural users
+        # TRANSLATED OUTPUT & GUIDES TABS
         tab_regional, tab_en = st.tabs([t("regional_guide", target_lang), "🇺🇸 English Guide"])
 
         with tab_regional:
             translated_guide = data.get("translated_guide", {})
             st.markdown(f"### {t('greeting', target_lang)} *{translated_guide.get('patient_greeting', '')}*")
-            st.success(f"📋 **{t('summary', target_lang)}** {translated_guide.get('simple_summary', '')}")
-            
+
+            st.markdown(f"""
+            <div class="card-general">
+                <h4 style="color:#1D7068; margin-top:0;">📋 {t('summary', target_lang)}</h4>
+                <p style="margin:0; font-size:1.1rem;">{translated_guide.get('simple_summary', '')}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
             st.markdown(f"#### 💊 {t('prescribed_medications', target_lang)} ({target_lang}):")
             for med in translated_guide.get("medicines", []):
-                # --- IMPROVEMENT: COLOR CODED CARDS FOR RURAL READABILITY ---
-                # green = safe, yellow = take with food, red = warning/opioid/sedative
-                timing_lower = med.get("simple_timing", "").lower()
-                name_lower = med.get("name", "").lower()
-                card_class = "card-green"
-
-                # Check for regional language representations of food
-                if any(x in timing_lower for x in ["food", "சாப்பாடு", "உணவு", "भोजन", "खाना", "తిండి", "ಊಟ್ಟ", "ഭക്ഷണം", "খাবার", "जेवण"]):
-                    card_class = "card-yellow"
-                if any(x in name_lower for x in ["alprazolam", "clonazepam", "digoxin"]):
-                    card_class = "card-red"
-
-                st.markdown(f"""
-                <div class="{card_class}">
-                    <h4 style="margin-top:0px; color:#bc8cff;">💊 {med['name']}</h4>
-                    <p style="margin:5px 0;">📏 <strong>{t('dosage', target_lang)}:</strong> {med['simple_dosage']}</p>
-                    <p style="margin:5px 0;">🕒 <strong>{t('alarm_time', target_lang)}:</strong> {med['simple_timing']}</p>
-                    <p style="margin:5px 0;">🎯 <strong>Purpose:</strong> {med['simple_purpose']}</p>
-                    <p style="margin:5px 0;">⏳ <strong>{t('duration', target_lang)}:</strong> {med['simple_duration']}</p>
-                </div>
-                """, unsafe_allow_html=True)
+                render_medicine_card(med, lang_key=target_lang, is_regional=True)
 
             rag_context = data.get("rag_context")
             if not rag_context:
                 rag_context = "Explanation unavailable"
-                
-            st.markdown(f"#### 🧠 What this means (Clinical Context)")
+
+            st.markdown("""
+            <div class="card-general">
+                <h4 style="color:#1D7068; margin-top:0;">🧠 What this means (Clinical Context)</h4>
+            """, unsafe_allow_html=True)
             st.info(rag_context)
+            st.markdown("</div>", unsafe_allow_html=True)
 
             if translated_guide.get("helpful_tips"):
                 st.markdown(f"#### 💡 {t('care_tips', target_lang)}")
                 for tip in translated_guide.get("helpful_tips", []):
                     st.markdown(f"- {tip}")
 
-            # ── TRUST UI: Footer badge + tucked source expander (Regional tab) ──
             st.markdown(
-                f"<p style='color:#8b949e; font-size:0.95rem; margin-top:18px;'>{trans['footer_badge']}</p>",
+                f"<p style='color:#64748B; font-size:0.95rem; margin-top:18px;'>{trans['footer_badge']}</p>",
                 unsafe_allow_html=True
             )
             render_sources_expander(rag_sources, active_lang)
@@ -1336,55 +1384,45 @@ elif st.session_state.step == 2:
         with tab_en:
             simple_en = data.get("simplified_en", {})
             st.markdown(f"### Greeting: *{simple_en.get('patient_greeting', 'Hello!')}*")
-            st.info(f"📋 **Care Summary:** {simple_en.get('simple_summary', '')}")
+
+            st.markdown(f"""
+            <div class="card-general">
+                <h4 style="color:#1D7068; margin-top:0;">📋 Care Summary</h4>
+                <p style="margin:0; font-size:1.1rem;">{simple_en.get('simple_summary', '')}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
             st.markdown("#### 💊 Prescribed Medications (Plain English):")
             for med in simple_en.get("medicines", []):
-                # --- IMPROVEMENT: COLOR CODED CARDS FOR RURAL READABILITY ---
-                # green = safe, yellow = take with food, red = warning/opioid/sedative
-                timing_lower = med.get("simple_timing", "").lower()
-                name_lower = med.get("name", "").lower()
-                card_class = "card-green"
-
-                if "food" in timing_lower or "eating" in timing_lower or "meals" in timing_lower:
-                    card_class = "card-yellow"
-                if "warning" in timing_lower or "danger" in timing_lower or "alprazolam" in name_lower or "clonazepam" in name_lower or "digoxin" in name_lower:
-                    card_class = "card-red"
-
-                st.markdown(f"""
-                <div class="{card_class}">
-                    <h4 style="margin-top:0px; color:#58a6ff;">💊 {med['name']}</h4>
-                    <p style="margin:5px 0;">📏 <strong>How much to take:</strong> {med['simple_dosage']}</p>
-                    <p style="margin:5px 0;">🕒 <strong>When to take:</strong> {med['simple_timing']}</p>
-                    <p style="margin:5px 0;">🎯 <strong>Why you take it:</strong> {med['simple_purpose']}</p>
-                    <p style="margin:5px 0;">⏳ <strong>How long:</strong> {med['simple_duration']}</p>
-                </div>
-                """, unsafe_allow_html=True)
+                render_medicine_card(med, lang_key="English", is_regional=False)
 
             rag_context = data.get("rag_context")
             if not rag_context:
                 rag_context = "Explanation unavailable"
-                
-            st.markdown("#### 🧠 What this means (Clinical Context)")
+
+            st.markdown("""
+            <div class="card-general">
+                <h4 style="color:#1D7068; margin-top:0;">🧠 What this means (Clinical Context)</h4>
+            """, unsafe_allow_html=True)
             st.info(rag_context)
+            st.markdown("</div>", unsafe_allow_html=True)
 
             if simple_en.get("helpful_tips"):
                 st.markdown("#### 💡 Recovery & Care Tips:")
                 for tip in simple_en.get("helpful_tips", []):
                     st.markdown(f"- {tip}")
 
-            # ── TRUST UI: Footer badge + tucked source expander (English tab) ──
             en_trans = DISCLAIMER_TRANSLATIONS["English"]
             st.markdown(
-                f"<p style='color:#8b949e; font-size:0.95rem; margin-top:18px;'>{en_trans['footer_badge']}</p>",
+                f"<p style='color:#64748B; font-size:0.95rem; margin-top:18px;'>{en_trans['footer_badge']}</p>",
                 unsafe_allow_html=True
             )
             render_sources_expander(rag_sources, "English")
-                    
-        # --- IMPROVEMENT: VOICE SYNTHESIS PLAYBACK SECTION ---
+
+        # VOICE AUDIO PLAYBACK SECTION
         st.markdown("### 🔊 Voice Audio Assistant")
         col_tts1, col_tts2 = st.columns(2)
-        
+
         with col_tts1:
             st.markdown("##### 🔊 Listen in English:")
             audio_text_en = f"{simple_en.get('patient_greeting', '')}. {simple_en.get('simple_summary', '')}."
@@ -1394,18 +1432,15 @@ elif st.session_state.step == 2:
                 audio_url_en = f"{BACKEND_URL}/api/audio?text={requests.utils.quote(audio_text_en)}&lang=en"
                 st.audio(audio_url_en, format="audio/mp3")
             except Exception:
-                # On TTS failure, show text prominently
                 st.warning("English Audio synthesis is currently offline. Please refer to the written English guide above.")
-                
+
         with col_tts2:
             st.markdown(f"##### 🔊 Listen in {target_lang}:")
             audio_text_reg = f"{translated_guide.get('patient_greeting', '')}. {translated_guide.get('simple_summary', '')}."
             for idx, med in enumerate(translated_guide.get("medicines", [])):
                 audio_text_reg += f" Medicine {idx+1}: {med['name']}. {med['simple_dosage']}. {med['simple_timing']}. {med['simple_purpose']}."
             try:
-                # Build URL once — do NOT duplicate the lang param
                 audio_url_reg = f"{BACKEND_URL}/api/audio?text={requests.utils.quote(audio_text_reg)}&lang={lang_iso}"
-                # Autoplay regional language audio using HTML so playback starts immediately
                 audio_html = f"""
                 <audio autoplay controls style="width:100%; margin-bottom:10px;">
                     <source src="{audio_url_reg}" type="audio/mpeg">
@@ -1419,10 +1454,8 @@ elif st.session_state.step == 2:
                     f"({_audio_exc}). Please refer to the written {target_lang} Guide above."
                 )
 
-        # --- IMPROVEMENT: READ EVERYTHING ALOUD BUTTON ---
-        # Merges emergency advisors, English guides, and translated guides to play a full combined audio.
         st.markdown("---")
-        if st.button(t("read_aloud", target_lang), width="stretch"):
+        if st.button(t("read_aloud", target_lang), use_container_width=True):
             full_text = f"Safety Advisory: {advisory_en}. Care Summary: {translated_guide.get('simple_summary', '')}."
             for idx, med in enumerate(translated_guide.get("medicines", [])):
                 full_text += f" Medicine {idx+1}: {med['name']}. dosage: {med['simple_dosage']}. timing: {med['simple_timing']}. purpose: {med['simple_purpose']}."
@@ -1434,9 +1467,6 @@ elif st.session_state.step == 2:
 
         st.markdown("---")
 
-        # ── TRUST UI: Consolidated source reference (replaces raw RAG dump) ──────
-        # The old raw-text expander is replaced with the structured, user-friendly
-        # source expander that shows document name + page, not internal chunks.
         with st.expander("📚 Clinical Reference Sources"):
             try:
                 if rag_sources:
@@ -1454,12 +1484,11 @@ elif st.session_state.step == 2:
                 else:
                     st.info("No specific sections from the official manuals matched this prescription.")
             except Exception:
-                pass  # Skip silently on FAISS retrieval failure
+                pass
 
-        # --- IMPROVEMENT: MEDICATION DATABASE TIMELINE AND VISUAL SCHEDULER CARDS ---
+        # MEDICATION DATABASE TIMELINE AND VISUAL SCHEDULER CARDS
         st.markdown("### 🕒 Auto-Generated Medication Timeline & Alarms")
         reminders = data.get("reminders", [])
-        print(f"[CP-SCHEDULE-DISPLAY] condition_checked=bool(reminders), value={bool(reminders)}")
         if reminders:
             df = pd.DataFrame(reminders)
             df.rename(columns={
@@ -1470,18 +1499,17 @@ elif st.session_state.step == 2:
                 "duration": t("duration", target_lang),
                 "frequency": "Frequency"
             }, inplace=True)
-            st.dataframe(df[[t("medicine_name", target_lang), t("dosage", target_lang), t("alarm_time", target_lang), t("food_direction", target_lang), t("duration", target_lang)]], width="stretch")
+            st.dataframe(df[[t("medicine_name", target_lang), t("dosage", target_lang), t("alarm_time", target_lang), t("food_direction", target_lang), t("duration", target_lang)]], use_container_width=True)
             st.success("🎉 Medicine alarms have been successfully generated and saved to your local SQLite database reminder repository!")
-            
-            # --- NEW FEATURE: MEDICINE SCHEDULE CARD (EMOJIS GRID) ---
+
             st.markdown("#### 📅 Visual Dosage Schedule Card")
             morning_meds, afternoon_meds, night_meds = generate_schedule_grid(reminders)
-            
+
             col_m, col_a, col_n = st.columns(3)
             with col_m:
-                st.markdown("""
-                <div style="background-color: rgba(255, 235, 204, 0.1); border: 1px solid #ffaa00; border-radius: 8px; padding: 15px; min-height: 180px;">
-                    <h4 style="color: #ffaa00; margin-top:0px;">{t('morning', target_lang)}</h4>
+                st.markdown(f"""
+                <div style="background-color: #FFFBEB; border: 1.5px solid #F59E0B; border-radius: 12px; padding: 16px; min-height: 180px;">
+                    <h4 style="color: #B45309; margin-top:0px;">☀️ {t('morning', target_lang)}</h4>
                 """, unsafe_allow_html=True)
                 if morning_meds:
                     for m in morning_meds:
@@ -1489,11 +1517,11 @@ elif st.session_state.step == 2:
                 else:
                     st.markdown("*No medications scheduled.*")
                 st.markdown("</div>", unsafe_allow_html=True)
-                
+
             with col_a:
-                st.markdown("""
-                <div style="background-color: rgba(204, 235, 255, 0.1); border: 1px solid #0099ff; border-radius: 8px; padding: 15px; min-height: 180px;">
-                    <h4 style="color: #0099ff; margin-top:0px;">{t('afternoon', target_lang)}</h4>
+                st.markdown(f"""
+                <div style="background-color: #EFF6FF; border: 1.5px solid #3B82F6; border-radius: 12px; padding: 16px; min-height: 180px;">
+                    <h4 style="color: #1D4ED8; margin-top:0px;">⛅ {t('afternoon', target_lang)}</h4>
                 """, unsafe_allow_html=True)
                 if afternoon_meds:
                     for m in afternoon_meds:
@@ -1501,11 +1529,11 @@ elif st.session_state.step == 2:
                 else:
                     st.markdown("*No medications scheduled.*")
                 st.markdown("</div>", unsafe_allow_html=True)
-                
+
             with col_n:
-                st.markdown("""
-                <div style="background-color: rgba(204, 204, 255, 0.1); border: 1px solid #7700ff; border-radius: 8px; padding: 15px; min-height: 180px;">
-                    <h4 style="color: #7700ff; margin-top:0px;">{t('night', target_lang)}</h4>
+                st.markdown(f"""
+                <div style="background-color: #F3E8FF; border: 1.5px solid #8B5CF6; border-radius: 12px; padding: 16px; min-height: 180px;">
+                    <h4 style="color: #6D28D9; margin-top:0px;">🌙 {t('night', target_lang)}</h4>
                 """, unsafe_allow_html=True)
                 if night_meds:
                     for m in night_meds:
@@ -1514,8 +1542,6 @@ elif st.session_state.step == 2:
                     st.markdown("*No medications scheduled.*")
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            # --- NEW FEATURE: DOWNLOAD SCHEDULE BUTTON ---
-            # Compile text schedule file for download
             sched_txt = f"MedClarity AI Medication Schedule - Patient: {patient_name}\n"
             sched_txt += f"Language: {target_lang} | Date: {date_val}\n"
             sched_txt += "==================================================\n\n"
@@ -1524,33 +1550,32 @@ elif st.session_state.step == 2:
             sched_txt += "🌙 NIGHT MEDS:\n" + ("\n".join([f"- {x}" for x in night_meds]) if night_meds else "None") + "\n\n"
             sched_txt += "==================================================\n"
             sched_txt += "Disclaimer: This is for understanding only. Always consult your prescribing doctor."
-            
+
             st.download_button(
                 label="📥 Download Schedule",
                 data=sched_txt,
                 file_name=f"{patient_name.replace(' ', '_')}_medication_schedule.txt",
                 mime="text/plain",
-                width="stretch"
+                use_container_width=True
             )
-            
+
         else:
             extracted_meds = data.get("simplified_en", {}).get("medicines", [])
             if extracted_meds:
                 st.info("No recurring schedule needed — this prescription contains a one-time or as-directed dose. See the medicine list above for details.")
             else:
                 st.warning("No medicines were detected for scheduling. Please verify the prescription text above.")
-            
-        # --- NEW FEATURE: NEARBY SERVICE LOCATORS (GOOGLE MAPS BUTTONS) ---
+
+        # NEARBY SERVICE LOCATORS
         st.markdown("### 🏥 Find Nearby Medical Services")
         st.markdown("""
-        <div style="display: flex; gap: 15px; margin-top: 10px; margin-bottom: 25px;">
-            <a href="https://www.google.com/maps/search/pharmacy+near+me" target="_blank" style="text-decoration: none; padding: 12px 24px; background-color: #2e8b57; color: white; border-radius: 8px; font-weight: bold; font-size:16px;">🏥 Find Nearby Pharmacy</a>
-            <a href="https://www.google.com/maps/search/hospital+near+me" target="_blank" style="text-decoration: none; padding: 12px 24px; background-color: #bd2130; color: white; border-radius: 8px; font-weight: bold; font-size:16px;">🏥 Find Nearby Hospital</a>
+        <div style="display: flex; gap: 15px; margin-top: 10px; margin-bottom: 25px; flex-wrap: wrap;">
+            <a href="https://www.google.com/maps/search/pharmacy+near+me" target="_blank" style="text-decoration: none; padding: 12px 24px; background-color: #2A9D8F; color: white; border-radius: 8px; font-weight: bold; font-size:16px;">🏥 Find Nearby Pharmacy</a>
+            <a href="https://www.google.com/maps/search/hospital+near+me" target="_blank" style="text-decoration: none; padding: 12px 24px; background-color: #E76F51; color: white; border-radius: 8px; font-weight: bold; font-size:16px;">🏥 Find Nearby Hospital</a>
         </div>
         """, unsafe_allow_html=True)
 
-        # --- IMPROVEMENT: WHATSAPP SHARING LINK ---
-        # Compiles message detailing all medicines and care summaries to send to relatives.
+        # WHATSAPP SHARING LINK
         st.markdown("### 📱 Share Patient Guide via WhatsApp")
         
         wa_greet = translated_guide.get("patient_greeting", "வணக்கம்")

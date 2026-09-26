@@ -49,7 +49,7 @@ class TranslationAgent:
 
     def translate_to_language(self, english_guide_json: str, safety_advisory_text: str, target_lang: str = "Tamil") -> TamilPrescription:
         """
-        Translates the structured English guide and safety advisor into a structured regional language guide using Groq.
+        Translates the structured English guide and safety advisor into a structured regional language guide using OpenAI.
         """
         schema_json = json.dumps(TamilPrescription.model_json_schema())
         system_instructions = (

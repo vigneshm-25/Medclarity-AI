@@ -300,9 +300,7 @@ class CoordinatorAgent:
             rag_sources = []
             rag_low_confidence = True
 
-        low_confidence = bool(ocr_fallback or "[unclear]" in raw_ocr.lower() or rag_low_confidence)
-
-
+        low_confidence = bool("[unclear]" in raw_ocr.lower() or rag_low_confidence)
 
         from app.utils.drug_validator import validate_drug_name
         drug_suggestions = []
@@ -335,7 +333,6 @@ class CoordinatorAgent:
             "rag_context": rag_context,
             "rag_sources": rag_sources,
             "low_confidence": low_confidence,
-            "ocr_fallback": ocr_fallback,
             "drug_suggestions": drug_suggestions,
         }
 

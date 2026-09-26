@@ -1,102 +1,80 @@
-# MedClarity AI
+# MedClarity AI (OpenAI Exclusive Architecture)
 
-MedClarity AI is a multilingual prescription assistance platform. It accepts prescription or clinical report images, extracts the text with OCR, structures the medical information, checks for safety concerns, simplifies medical instructions, translates guidance into Tamil, retrieves supporting safety context, generates medication reminders, and produces text-to-speech output for the final guide.
+MedClarity AI is an AI-powered prescription literacy and medication reminder application for mobile (React Native Expo) and web. It processes doctor handwritten prescriptions using **OpenAI Vision** and **GPT-5-mini**, extracts structured medication data grounded in WHO Model List of Essential Medicines (23rd Ed, 2023) & CDSCO India NLEM 2022 guidelines, translates guidance into Tamil and English, and schedules local medication reminders.
 
-## Overview
+---
 
-The application is split into two parts:
+## 🏗️ Architecture & Single AI Pipeline
 
-1. A FastAPI backend under backend/app that runs the prescription-processing pipeline.
-2. A Streamlit frontend under frontend that provides the user interface for uploads and results.
-
-The backend orchestrates several specialized components, including OCR, medical parsing, safety checks, text simplification, translation, retrieval, scheduling, and audio generation.
-
-## Features
-
-1. Image upload for prescription and report processing.
-2. OCR extraction for handwritten or printed medical text.
-3. Structured parsing of medicines, dosages, symptoms, and warnings.
-4. Safety checks for high-risk symptoms and drug combinations.
-5. Plain-language summaries for easier patient understanding.
-6. Tamil translation for local-language guidance.
-7. Retrieval from a local FAISS index seeded with medical safety references.
-8. Medication reminder generation backed by SQLite.
-9. Text-to-speech output for spoken guidance.
-
-## Project Structure
+MedClarity AI operates on a single, unified OpenAI processing pipeline:
 
 ```
-gramcare-ai/
-├── backend/
-│   ├── app/
-│   │   ├── config.py
-│   │   ├── database.py
-│   │   ├── main.py
-│   │   ├── models.py
-│   │   ├── agents/
-│   │   └── utils/
-│   ├── data/
-│   ├── ingest_sources.py
-│   ├── requirements.txt
-│   └── README.md
-├── frontend/
-│   ├── app.py
-│   └── requirements.txt
-├── main.py
-├── pyproject.toml
-└── README.md
+Prescription Image
+        ↓
+OpenAI Vision (Handwriting OCR)
+        ↓
+Raw OCR Text
+        ↓
+GPT-5-mini Medical Structuring
+        ↓
+Structured Medicine JSON
+        ↓
+GPT-5-mini Translation (Tamil / English)
+        ↓
+Local Scheduled Reminders
 ```
 
-## Setup
+---
 
-### Prerequisites
+## 🛠️ Tech Stack & Services
 
-1. Python 3.9, 3.10, or 3.11.
-2. An OpenAI API key.
+- **Mobile App:** React Native with Expo (Managed Workflow), React Navigation, Zustand state management, `i18next` (English & Tamil), `expo-notifications`, `expo-av`, `expo-camera`, `expo-image-picker`.
+- **Backend Services:** FastAPI running on `http://localhost:8000`.
+- **AI Engine:** OpenAI APIs exclusively (`OPENAI_API_KEY`).
+  - **OpenAI Vision:** Prescription handwriting transcription.
+  - **GPT-5-mini:** Medical structuring, WHO/NLEM grounding, JSON output generation, Tamil/English patient guide translation.
 
-### Environment Variables
+---
 
-Create a `.env` file in the project root with the required values:
+## ⚙️ Environment Setup
 
+Environment configuration requires only:
+
+```env
+API_BASE_URL=http://10.0.2.2:8000
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+---
+
+## 🚀 Running the Project
+
+### 1. Backend Server
 ```bash
-OPENAI_API_KEY=YOUR_ACTUAL_OPENAI_API_KEY_HERE
-DATABASE_URL=sqlite:///./backend/data/local_db.db
-BACKEND_URL=http://localhost:8000
+# Activate Python environment
+.\venv\Scripts\Activate.ps1
+
+# Launch FastAPI server
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Backend
-
+### 2. React Native Expo Mobile App
 ```bash
-cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-# Production launch (single worker, no reload to save memory on 512MB RAM):
-uvicorn app.main:app --port 8000 --workers 1
+cd medclarity-app
+
+# Install dependencies
+npm install
+
+# Start Expo dev server
+npx expo start
+
+# Web preview
+npx expo start --web
 ```
 
-### Frontend
+---
 
-Open a new terminal and run:
+## 🛡️ Error Handling
 
-```bash
-cd frontend
-..\backend\venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py --server.port 8501
-```
-
-## API Endpoints
-
-1. `GET /` returns the backend status.
-2. `POST /api/upload-prescription` uploads an image and runs the full pipeline.
-3. `POST /api/ocr` extracts raw OCR text only.
-4. `POST /api/process-text` processes already extracted text through the remaining pipeline.
-
-## Data And Storage
-
-The backend stores generated reminders in SQLite and uses local data folders for medical documents, extracted sources, audio output, and vector search files.
-
-## Testing
-
-Backend tests are available under backend/tests and the project root test files. Run the relevant test command for the area you are working on.
+- **Zero Silent Failures:** All API calls explicitly handle invalid keys (401), rate limits (429), timeouts, and JSON parsing errors.
+- **User-Facing Error UI:** Surfaced through explicit `ErrorBanner` components with retry buttons.

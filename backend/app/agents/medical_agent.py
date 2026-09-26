@@ -250,7 +250,7 @@ class MedicalAgent:
 
     def parse_prescription(self, ocr_text: str) -> ExtractedPrescription:
         """
-        Parses OCR transcript into a clean Pydantic data structure using Gemini.
+        Parses OCR transcript into a clean Pydantic data structure using OpenAI GPT-5-mini.
         """
         print(f"[OCR INPUT]\n{ocr_text}\n")
         
@@ -259,7 +259,7 @@ class MedicalAgent:
                 patient_name=None,
                 symptoms=[],
                 medicines=[],
-                clinical_notes="Clinical parsing is unavailable because the external medical agent is not configured."
+                clinical_notes="Clinical parsing is unavailable because the OpenAI medical agent is not configured."
             )
 
         content = ""
@@ -270,7 +270,7 @@ class MedicalAgent:
             
             # Step 2: Build Prompt
             system_instructions = self.build_prompt(medicine_text)
-            print(f"[COMPLETE PROMPT TO GEMINI]\n{system_instructions}\n")
+            print(f"[COMPLETE PROMPT TO OPENAI]\n{system_instructions}\n")
             
             # Step 3: Call LLM
             user_prompt = (

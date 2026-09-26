@@ -41,7 +41,7 @@ class SafetyAgent:
 
     def evaluate_safety(self, clinical_json: str) -> SafetyReport:
         """
-        Analyzes clinical extraction and issues safety warning clearance or emergency advisories using Groq.
+        Analyzes clinical extraction and issues safety warning clearance or emergency advisories using OpenAI.
         """
         schema_json = json.dumps(SafetyReport.model_json_schema())
         system_instructions = (
